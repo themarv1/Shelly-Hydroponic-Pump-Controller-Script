@@ -1,14 +1,18 @@
-// Shelly Hydroponic Pump Controller Script v5 (Fixed Day/Night Times + Telegram Notifications)
+// Shelly Hydroponic Pump Controller Script v6 (Advanced Notifications)
 // ------------------------------------------------------------------------------------------
 // Dieses Skript steuert eine Pumpe (angeschlossen an Shelly Switch 0) für ein Hydroponik-System.
-// Es verwendet unterschiedliche AN/AUS-Zyklen für feste Tag- und Nachtzeiten, die unten konfiguriert werden.
+// Es verwendet unterschiedliche AN/AUS-Zyklen für feste Tag- und Nachtzeiten.
+// Standort-Einstellungen im Shelly sind für dieses Skript NICHT relevant.
 //
 // BENACHRICHTIGUNG: Sendet Status- und Fehlermeldungen über einen Telegram Bot.
-//                  - Benachrichtigung bei Skriptstart.
-//                  - Benachrichtigung bei kritischen Timer-Fehlern.
+//                  - LAUTE Benachrichtigung bei Skriptstart.
+//                  - STUMME Benachrichtigung beim Wechsel zwischen Tag- und Nacht-Modus.
+//                  - STUMME tägliche Statusmeldung ("Alles OK").
+//                  - Optional STUMME Debug-Meldungen bei jedem Pumpenschaltvorgang.
+//                  - LAUTE Benachrichtigung bei kritischen Timer-Fehlern.
 //
-// AUTOR: themarv
-// VERSION: 5.0
+// AUTOR: themarv, KI-Assistiert(Gemini)
+// VERSION: 1.0 (Advanced Notifications)
 // DATUM: 2025-04-16 (Anpassungsdatum)
 //
 // BITTE KONFIGURATION ANPASSEN UND GRÜNDLICH TESTEN! NUTZUNG AUF EIGENE VERANTWORTUNG.
@@ -19,11 +23,11 @@
 // Schalt-ID des Relais (bei Shelly Plus 1PM normalerweise 0)
 let CONFIG_SWITCH_ID = 0;
 
-// --- NEU: Feste Zeiten für Tag/Nacht ---
+// --- Feste Zeiten für Tag/Nacht ---
 // Stunde, an der der Tag beginnt (0-23)
 let CONFIG_DAY_START_HOUR = 6;  // Beispiel: 06:00 Uhr
 // Stunde, an der der Tag endet (die Nacht beginnt) (0-23)
-let CONFIG_DAY_END_HOUR = 22;   // Beispiel: 18:00 Uhr (d.h. 18:00 ist schon Nacht)
+let CONFIG_DAY_END_HOUR = 18;   // Beispiel: 18:00 Uhr (d.h. 18:00 ist schon Nacht)
 
 // Dauer in Minuten für den TAG-Zyklus (zwischen START_HOUR und END_HOUR)
 let CONFIG_DAY_ON_MIN = 15;
@@ -31,23 +35,30 @@ let CONFIG_DAY_OFF_MIN = 45;
 
 // Dauer in Minuten für den NACHT-Zyklus (vor START_HOUR und ab END_HOUR)
 let CONFIG_NIGHT_ON_MIN = 15;
-let CONFIG_NIGHT_OFF_MIN = 120;  // 2 Stunden
+let CONFIG_NIGHT_OFF_MIN = 180;  // 3 Stunden
 
 // --- BENACHRICHTIGUNGS-KONFIGURATION ---
-// Benachrichtigungen aktivieren? (true oder false)
+// Benachrichtigungen generell aktivieren? (true oder false)
 let CONFIG_ENABLE_NOTIFICATIONS = true;
 // Telegram Bot Token (von BotFather erhalten) - !! UNBEDINGT ERSETZEN !!
-let CONFIG_TELEGRAM_BOT_TOKEN = "ENTER_YOUR_BOTTOKEN_HERE";
+let CONFIG_TELEGRAM_BOT_TOKEN = "DEIN_BOT_TOKEN_HIER_EINFUEGEN";
 // Telegram Chat ID (Empfänger der Nachricht) - !! UNBEDINGT ERSETZEN !!
-let CONFIG_TELEGRAM_CHAT_ID = "ENTER_YOUR_CHATID_HERE";
+let CONFIG_TELEGRAM_CHAT_ID = "DEINE_CHAT_ID_HIER_EINFUEGEN";
+// NEU: Debug-Modus für Pumpen-Schaltungen aktivieren? (true = AN, false = AUS)
+let CONFIG_DEBUG_PUMP_NOTIFICATIONS = false;
+// NEU: Stunde für tägliche Statusmeldung (0-23)
+let CONFIG_DAILY_STATUS_HOUR = 8; // Beispiel: 08:00 Uhr morgens
 
 // --- ENDE KONFIGURATION ---
 
 // Globale Variablen (nicht ändern)
 let timerHandle = null;
 let isCurrentlyOn = false;
-// 'notificationSent' wird nur noch für den Timer-Fehler verwendet
-let notificationSent = false;
+let notificationSent = false; // Verhindert primär Spam bei wiederholten Timer-Fehlern
+// NEU: Status der vorherigen Periode (Tag/Nacht)
+let wasPreviouslyDayTime = null; // Wird bei Init gesetzt
+// NEU: Timer für täglichen Status
+let dailyStatusTimerHandle = null;
 
 // Funktion zum Escapen von HTML-Zeichen für Telegram Nachrichten (manuelle Version)
 function escapeHtml(text) {
@@ -63,23 +74,37 @@ function escapeHtml(text) {
   return result;
 }
 
-// Funktion zum Senden einer Benachrichtigung via Telegram Bot API
-function sendNotification(message) {
+// Funktion zum Senden einer Benachrichtigung via Telegram Bot API (ANGEPASST für Stumm-Option)
+function sendNotification(message, isSilent) {
+  // Standardmäßig ist eine Nachricht LAUT (isSilent = false)
+  isSilent = (typeof isSilent === 'boolean' && isSilent);
+
   if (!CONFIG_ENABLE_NOTIFICATIONS || CONFIG_TELEGRAM_BOT_TOKEN === "DEIN_BOT_TOKEN_HIER_EINFUEGEN" || CONFIG_TELEGRAM_CHAT_ID === "DEINE_CHAT_ID_HIER_EINFUEGEN") {
     print("Benachrichtigungen deaktiviert oder Bot Token/Chat ID nicht konfiguriert.");
     return;
   }
-  // Verhindert Spam nur noch für den Timer-Fehler (falls er schnell hintereinander auftritt)
-  if (notificationSent && message.indexOf("Timer delay") !== -1) {
-      print("Notification already sent for current error state. Skipping duplicate error message.");
+
+  // Verhindert Spam nur bei wiederholten LAUTEN Timer-Fehlern
+  if (notificationSent && !isSilent && message.indexOf("Timer delay") !== -1) {
+      print("Notification already sent for current error state. Skipping duplicate LOUD error message.");
       return;
   }
 
-  print("Sende Telegram Benachrichtigung: " + message);
+  print((isSilent ? "(Silent) " : "(LOUD) ") + "Sende Telegram Benachrichtigung: " + message);
 
   let telegramUrl = "https://api.telegram.org/bot" + CONFIG_TELEGRAM_BOT_TOKEN + "/sendMessage";
   let messageText = "<b>Shelly Hydroponic Alert:</b>\n" + escapeHtml(message);
   let payload = { chat_id: CONFIG_TELEGRAM_CHAT_ID, text: messageText, parse_mode: "HTML" };
+
+  // Füge disable_notification hinzu, wenn Nachricht stumm sein soll
+  if (isSilent) {
+    payload.disable_notification = true;
+  }
+
+  // Setze Flag zurück BEVOR eine LAUTE Nachricht gesendet wird, damit sie immer durchgeht (außer bei direkt wiederholtem Fehler)
+  if (!isSilent) {
+    notificationSent = false;
+  }
 
   Shelly.call("HTTP.POST", {
       url: telegramUrl,
@@ -95,22 +120,22 @@ function sendNotification(message) {
         try { responseBody = JSON.parse(res.body); if (responseBody.ok === true) { success = true; } }
         catch (e) { print("Telegram Antwort konnte nicht als JSON geparst werden."); }
       }
+
       if (success) {
         print("Telegram Benachrichtigung erfolgreich gesendet.");
-        // Markieren, dass für diesen Fehlerzustand gesendet wurde, nur wenn es eine Fehlermeldung war
-        if (message.indexOf("Fehler") !== -1 || message.indexOf("Error") !== -1) {
-             notificationSent = true; // Flag nur bei Fehlern setzen
-        }
       } else {
         print("Fehler beim Senden der Telegram Benachrichtigung: Code=" + error_code + ", Msg=" + error_msg + ", HTTP-Code=" + (res ? res.code : "N/A") + ", Body: " + (res ? res.body : "N/A"));
+        // Setze Flag nur bei FEHLER einer LAUTEN Nachricht, um Spam zu verhindern
+        if (!isSilent) {
+             notificationSent = true;
+             print("Set notificationSent flag due to LOUD message failure.");
+        }
       }
     }
   );
 }
 
-// *** GELÖSCHT: updateSunriseSunsetTimes Funktion wird nicht mehr benötigt ***
-
-// Funktion zum Ausführen des Pumpenzyklus (ANGEPASST auf feste Zeiten)
+// Funktion zum Ausführen des Pumpenzyklus (ANGEPASST für Wechsel- & Debug-Nachrichten)
 function runPumpCycle() {
   // Vorhandenen Timer löschen
   if (timerHandle !== null) {
@@ -121,13 +146,21 @@ function runPumpCycle() {
   let currentOnDurationMin = 0;
   let currentOffDurationMin = 0;
   let mode = "";
-
-  // *** NEU: Tag/Nacht anhand fester Stunden bestimmen ***
   let timeNow = new Date();
   let currentHour = timeNow.getHours();
-  // Prüft, ob die aktuelle Stunde im Tag-Bereich liegt
   let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR);
 
+  // *** NEU: Prüfen auf Tag/Nacht Wechsel und stumme Nachricht senden ***
+  // Führt dies nur aus, wenn wasPreviouslyDayTime schon mal gesetzt wurde (nicht beim allerersten Lauf)
+  if (wasPreviouslyDayTime !== null && isDayTime !== wasPreviouslyDayTime) {
+    let switchMessage = "Wechsel zum " + (isDayTime ? "Tag-Modus" : "Nacht-Modus") + " (Zyklen: " +
+                        (isDayTime ? CONFIG_DAY_ON_MIN + "/" + CONFIG_DAY_OFF_MIN : CONFIG_NIGHT_ON_MIN + "/" + CONFIG_NIGHT_OFF_MIN) + " Min).";
+    sendNotification(switchMessage, true); // true = Stumm senden
+  }
+  // Aktuellen Status für den nächsten Durchlauf merken
+  wasPreviouslyDayTime = isDayTime;
+
+  // Zykluszeiten basierend auf Tag/Nacht setzen
   if (isDayTime) {
     currentOnDurationMin = CONFIG_DAY_ON_MIN;
     currentOffDurationMin = CONFIG_DAY_OFF_MIN;
@@ -137,25 +170,35 @@ function runPumpCycle() {
     currentOffDurationMin = CONFIG_NIGHT_OFF_MIN;
     mode = "Nacht (Feste Zeiten)";
   }
-  // *** ENTFERNT: Prüfung auf Fallback-Modus ***
-
   print("Hydroponic Cycle: Modus: " + mode + ". Zyklus: " + currentOnDurationMin + "min AN / " + currentOffDurationMin + "min AUS.");
 
-  // Nächste Aktion bestimmen und ausführen
+  // Pumpe steuern und nächsten Lauf planen
   let nextTimerDelaySec = 0;
 
   if (isCurrentlyOn) {
-    // Wenn aktuell AN, dann jetzt AUS schalten
-    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false});
+    // Pumpe AUS schalten
+    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function(res, err_code, err_msg){
+         if (err_code === 0){
+             print("Hydroponic Cycle: Pumpe AUS geschaltet.");
+             // *** NEU: Optionale Debug-Nachricht für Pumpe AUS ***
+             if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pumpe wurde AUSgeschaltet.", true); } // true = Stumm senden
+         } else { print("FEHLER beim Ausschalten der Pumpe: Code "+err_code + ", Msg: "+err_msg);}
+    });
     isCurrentlyOn = false;
     nextTimerDelaySec = currentOffDurationMin * 60;
-    print("Hydroponic Cycle: Pumpe AUS geschaltet. Nächste Aktion in " + currentOffDurationMin + " Minuten.");
+    print("Hydroponic Cycle: Nächste Aktion (AN) in " + currentOffDurationMin + " Minuten geplant.");
   } else {
-    // Wenn aktuell AUS, dann jetzt AN schalten
-    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true});
+    // Pumpe AN schalten
+     Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true}, function(res, err_code, err_msg){
+          if (err_code === 0){
+              print("Hydroponic Cycle: Pumpe AN geschaltet.");
+              // *** NEU: Optionale Debug-Nachricht für Pumpe AN ***
+              if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pumpe wurde EINGESCHALTET.", true); } // true = Stumm senden
+          } else { print("FEHLER beim Einschalten der Pumpe: Code "+err_code + ", Msg: "+err_msg);}
+     });
     isCurrentlyOn = true;
     nextTimerDelaySec = currentOnDurationMin * 60;
-    print("Hydroponic Cycle: Pumpe AN geschaltet. Nächste Aktion in " + currentOnDurationMin + " Minuten.");
+    print("Hydroponic Cycle: Nächste Aktion (AUS) in " + currentOnDurationMin + " Minuten geplant.");
   }
 
   // Timer für die nächste Ausführung setzen
@@ -164,19 +207,57 @@ function runPumpCycle() {
   } else {
       // Verhindert Endlosschleife bei ungültigem Delay
       print("Hydroponic Cycle: Fehler - Timer-Delay ist 0 oder negativ. Stoppe Zyklus.");
-      // Reset notificationSent flag before sending critical error to ensure it's sent
+      // Reset notificationSent flag before sending LOUD critical error
       notificationSent = false;
-      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped to prevent issues!");
+      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped to prevent issues!", false); // false = Laut senden
       // Hier KEINEN neuen Timer setzen, der Zyklus stoppt.
   }
 }
 
-// Funktion zum Starten des ersten Zyklus (VEREINFACHT)
-function initializeCycle() {
-    print("Hydroponic Cycle Script (Fixed Times): Initialisiere...");
-    notificationSent = false; // Reset notification flag
+// *** NEU: Funktion zum Senden des täglichen Status ***
+function sendDailyStatus() {
+  let timeNow = new Date();
+  let currentHour = timeNow.getHours();
+  let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR);
+  let currentMode = isDayTime ? "Tag (Feste Zeiten)" : "Nacht (Feste Zeiten)";
+  // Baue Statusnachricht zusammen
+  let message = "Täglicher Status: Script läuft OK.\n" +
+                "Aktueller Modus: " + currentMode + "\n" +
+                "Pumpe ist aktuell: " + (isCurrentlyOn ? "AN" : "AUS");
+                // Optional: Füge hier weitere Infos hinzu, z.B. Shelly Uptime (Shelly.GetStatus benötigt)
 
-    // Kurze Verzögerung (3 Sek), dann ersten Zyklus starten UND Startmeldung senden
+  print("Sende täglichen Statusbericht...");
+  // Reset notificationSent before sending routine status? Not necessary for silent.
+  sendNotification(message, true); // true = Stumm senden
+}
+
+// Funktion zum Starten des täglichen Updates und des ersten Zyklus (ANGEPASST für neuen Timer & Init-Status)
+function initializeCycle() {
+    print("Hydroponic Cycle Script (Fixed Times, Adv. Notify): Initialisiere...");
+    notificationSent = false; // Reset notification flag on script start
+
+    // *** NEU: Initialen Tag/Nacht-Status für Wechsel-Erkennung setzen ***
+    let initTime = new Date();
+    let initHour = initTime.getHours();
+    wasPreviouslyDayTime = (initHour >= CONFIG_DAY_START_HOUR && initHour < CONFIG_DAY_END_HOUR);
+    print("Initialer Status gesetzt: " + (wasPreviouslyDayTime ? "Tag" : "Nacht"));
+
+    // *** NEU: Täglichen Status-Timer planen ***
+    if (dailyStatusTimerHandle !== null) Timer.clear(dailyStatusTimerHandle);
+    let now = new Date();
+    // Berechne Millisekunden bis zur nächsten CONFIG_DAILY_STATUS_HOUR
+    let targetTimeToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), CONFIG_DAILY_STATUS_HOUR, 0, 0, 0); // Zielzeit heute
+    let msToTarget = targetTimeToday.getTime() - now.getTime();
+    // Wenn die Zielzeit heute schon vorbei ist, plane für morgen
+    if (msToTarget < 0) {
+        msToTarget += 24 * 60 * 60 * 1000; // Millisekunden für 24h addieren
+    }
+    // Setze den Timer: Erste Ausführung nach 'msToTarget', dann alle 24h wiederholen
+    dailyStatusTimerHandle = Timer.set(msToTarget, true, sendDailyStatus);
+    print("Täglicher Statusbericht geplant für " + CONFIG_DAILY_STATUS_HOUR + ":00 Uhr (nächster Lauf in ca. " + Math.round(msToTarget/60000) + " Min).");
+
+
+    // Kurze Verzögerung (3 Sek), dann ersten Zyklus starten UND LAUTE Startmeldung senden
     print("Hydroponic Cycle: Warte kurz (3 Sek.)...");
     Timer.set(3000, false, function() {
         print("Hydroponic Cycle Script: Starte ersten Zykluslauf.");
@@ -186,14 +267,13 @@ function initializeCycle() {
             // Starte den ersten Durchlauf des Zyklus
             runPumpCycle();
 
-            // Startbenachrichtigung senden (vereinfachte Nachricht)
+            // Send LOUD startup notification
             if (CONFIG_ENABLE_NOTIFICATIONS && CONFIG_TELEGRAM_BOT_TOKEN !== "DEIN_BOT_TOKEN_HIER_EINFUEGEN" && CONFIG_TELEGRAM_CHAT_ID !== "DEINE_CHAT_ID_HIER_EINFUEGEN") {
-                notificationSent = false; // Reset für Start-Nachricht
-                sendNotification("Hydroponic script (Fixed Times) gestartet.");
+                notificationSent = false; // Reset für LAUTE Start-Nachricht
+                sendNotification("Hydroponic script (Fixed Times) gestartet.", false); // false = LAUT
             }
         });
     });
-    // *** ENTFERNT: Planung des täglichen Sonnenzeiten-Updates ***
 }
 
 // --- Skriptstart ---
