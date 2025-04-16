@@ -1,4 +1,4 @@
-# Shelly Plus 1PM Hydroponic Pump Controller Script
+# Shelly Hydroponic Pump Controller Script
 
 This script provides automated control for a pump connected to a Shelly Plus 1PM device, specifically tailored for hydroponic systems. It uses fixed time schedules to differentiate between day and night cycles and includes advanced notification features via Telegram.
 
