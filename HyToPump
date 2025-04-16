@@ -1,0 +1,201 @@
+// Shelly Hydroponic Pump Controller Script v5 (Fixed Day/Night Times + Telegram Notifications)
+// ------------------------------------------------------------------------------------------
+// Dieses Skript steuert eine Pumpe (angeschlossen an Shelly Switch 0) für ein Hydroponik-System.
+// Es verwendet unterschiedliche AN/AUS-Zyklen für feste Tag- und Nachtzeiten, die unten konfiguriert werden.
+//
+// BENACHRICHTIGUNG: Sendet Status- und Fehlermeldungen über einen Telegram Bot.
+//                  - Benachrichtigung bei Skriptstart.
+//                  - Benachrichtigung bei kritischen Timer-Fehlern.
+//
+// AUTOR: themarv
+// VERSION: 5.0
+// DATUM: 2025-04-16 (Anpassungsdatum)
+//
+// BITTE KONFIGURATION ANPASSEN UND GRÜNDLICH TESTEN! NUTZUNG AUF EIGENE VERANTWORTUNG.
+// ------------------------------------------------------------------------------------------
+
+// --- KONFIGURATION ---
+
+// Schalt-ID des Relais (bei Shelly Plus 1PM normalerweise 0)
+let CONFIG_SWITCH_ID = 0;
+
+// --- NEU: Feste Zeiten für Tag/Nacht ---
+// Stunde, an der der Tag beginnt (0-23)
+let CONFIG_DAY_START_HOUR = 6;  // Beispiel: 06:00 Uhr
+// Stunde, an der der Tag endet (die Nacht beginnt) (0-23)
+let CONFIG_DAY_END_HOUR = 22;   // Beispiel: 18:00 Uhr (d.h. 18:00 ist schon Nacht)
+
+// Dauer in Minuten für den TAG-Zyklus (zwischen START_HOUR und END_HOUR)
+let CONFIG_DAY_ON_MIN = 15;
+let CONFIG_DAY_OFF_MIN = 45;
+
+// Dauer in Minuten für den NACHT-Zyklus (vor START_HOUR und ab END_HOUR)
+let CONFIG_NIGHT_ON_MIN = 15;
+let CONFIG_NIGHT_OFF_MIN = 120;  // 2 Stunden
+
+// --- BENACHRICHTIGUNGS-KONFIGURATION ---
+// Benachrichtigungen aktivieren? (true oder false)
+let CONFIG_ENABLE_NOTIFICATIONS = true;
+// Telegram Bot Token (von BotFather erhalten) - !! UNBEDINGT ERSETZEN !!
+let CONFIG_TELEGRAM_BOT_TOKEN = "ENTER_YOUR_BOTTOKEN_HERE";
+// Telegram Chat ID (Empfänger der Nachricht) - !! UNBEDINGT ERSETZEN !!
+let CONFIG_TELEGRAM_CHAT_ID = "ENTER_YOUR_CHATID_HERE";
+
+// --- ENDE KONFIGURATION ---
+
+// Globale Variablen (nicht ändern)
+let timerHandle = null;
+let isCurrentlyOn = false;
+// 'notificationSent' wird nur noch für den Timer-Fehler verwendet
+let notificationSent = false;
+
+// Funktion zum Escapen von HTML-Zeichen für Telegram Nachrichten (manuelle Version)
+function escapeHtml(text) {
+  if (typeof text !== 'string') { return text; }
+  let result = "";
+  for (let i = 0; i < text.length; i++) {
+    let char = text[i];
+    if (char === '&') { result += '&amp;'; }
+    else if (char === '<') { result += '&lt;'; }
+    else if (char === '>') { result += '&gt;'; }
+    else { result += char; }
+  }
+  return result;
+}
+
+// Funktion zum Senden einer Benachrichtigung via Telegram Bot API
+function sendNotification(message) {
+  if (!CONFIG_ENABLE_NOTIFICATIONS || CONFIG_TELEGRAM_BOT_TOKEN === "DEIN_BOT_TOKEN_HIER_EINFUEGEN" || CONFIG_TELEGRAM_CHAT_ID === "DEINE_CHAT_ID_HIER_EINFUEGEN") {
+    print("Benachrichtigungen deaktiviert oder Bot Token/Chat ID nicht konfiguriert.");
+    return;
+  }
+  // Verhindert Spam nur noch für den Timer-Fehler (falls er schnell hintereinander auftritt)
+  if (notificationSent && message.indexOf("Timer delay") !== -1) {
+      print("Notification already sent for current error state. Skipping duplicate error message.");
+      return;
+  }
+
+  print("Sende Telegram Benachrichtigung: " + message);
+
+  let telegramUrl = "https://api.telegram.org/bot" + CONFIG_TELEGRAM_BOT_TOKEN + "/sendMessage";
+  let messageText = "<b>Shelly Hydroponic Alert:</b>\n" + escapeHtml(message);
+  let payload = { chat_id: CONFIG_TELEGRAM_CHAT_ID, text: messageText, parse_mode: "HTML" };
+
+  Shelly.call("HTTP.POST", {
+      url: telegramUrl,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      timeout: 15,
+      ssl_ca: "*"
+    },
+    function(res, error_code, error_msg) {
+      let success = false;
+      if (error_code === 0 && res && res.code === 200) {
+        let responseBody = null;
+        try { responseBody = JSON.parse(res.body); if (responseBody.ok === true) { success = true; } }
+        catch (e) { print("Telegram Antwort konnte nicht als JSON geparst werden."); }
+      }
+      if (success) {
+        print("Telegram Benachrichtigung erfolgreich gesendet.");
+        // Markieren, dass für diesen Fehlerzustand gesendet wurde, nur wenn es eine Fehlermeldung war
+        if (message.indexOf("Fehler") !== -1 || message.indexOf("Error") !== -1) {
+             notificationSent = true; // Flag nur bei Fehlern setzen
+        }
+      } else {
+        print("Fehler beim Senden der Telegram Benachrichtigung: Code=" + error_code + ", Msg=" + error_msg + ", HTTP-Code=" + (res ? res.code : "N/A") + ", Body: " + (res ? res.body : "N/A"));
+      }
+    }
+  );
+}
+
+// *** GELÖSCHT: updateSunriseSunsetTimes Funktion wird nicht mehr benötigt ***
+
+// Funktion zum Ausführen des Pumpenzyklus (ANGEPASST auf feste Zeiten)
+function runPumpCycle() {
+  // Vorhandenen Timer löschen
+  if (timerHandle !== null) {
+    Timer.clear(timerHandle);
+    timerHandle = null;
+  }
+
+  let currentOnDurationMin = 0;
+  let currentOffDurationMin = 0;
+  let mode = "";
+
+  // *** NEU: Tag/Nacht anhand fester Stunden bestimmen ***
+  let timeNow = new Date();
+  let currentHour = timeNow.getHours();
+  // Prüft, ob die aktuelle Stunde im Tag-Bereich liegt
+  let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR);
+
+  if (isDayTime) {
+    currentOnDurationMin = CONFIG_DAY_ON_MIN;
+    currentOffDurationMin = CONFIG_DAY_OFF_MIN;
+    mode = "Tag (Feste Zeiten)";
+  } else {
+    currentOnDurationMin = CONFIG_NIGHT_ON_MIN;
+    currentOffDurationMin = CONFIG_NIGHT_OFF_MIN;
+    mode = "Nacht (Feste Zeiten)";
+  }
+  // *** ENTFERNT: Prüfung auf Fallback-Modus ***
+
+  print("Hydroponic Cycle: Modus: " + mode + ". Zyklus: " + currentOnDurationMin + "min AN / " + currentOffDurationMin + "min AUS.");
+
+  // Nächste Aktion bestimmen und ausführen
+  let nextTimerDelaySec = 0;
+
+  if (isCurrentlyOn) {
+    // Wenn aktuell AN, dann jetzt AUS schalten
+    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false});
+    isCurrentlyOn = false;
+    nextTimerDelaySec = currentOffDurationMin * 60;
+    print("Hydroponic Cycle: Pumpe AUS geschaltet. Nächste Aktion in " + currentOffDurationMin + " Minuten.");
+  } else {
+    // Wenn aktuell AUS, dann jetzt AN schalten
+    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true});
+    isCurrentlyOn = true;
+    nextTimerDelaySec = currentOnDurationMin * 60;
+    print("Hydroponic Cycle: Pumpe AN geschaltet. Nächste Aktion in " + currentOnDurationMin + " Minuten.");
+  }
+
+  // Timer für die nächste Ausführung setzen
+  if (nextTimerDelaySec > 0) {
+      timerHandle = Timer.set(nextTimerDelaySec * 1000, false, runPumpCycle);
+  } else {
+      // Verhindert Endlosschleife bei ungültigem Delay
+      print("Hydroponic Cycle: Fehler - Timer-Delay ist 0 oder negativ. Stoppe Zyklus.");
+      // Reset notificationSent flag before sending critical error to ensure it's sent
+      notificationSent = false;
+      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped to prevent issues!");
+      // Hier KEINEN neuen Timer setzen, der Zyklus stoppt.
+  }
+}
+
+// Funktion zum Starten des ersten Zyklus (VEREINFACHT)
+function initializeCycle() {
+    print("Hydroponic Cycle Script (Fixed Times): Initialisiere...");
+    notificationSent = false; // Reset notification flag
+
+    // Kurze Verzögerung (3 Sek), dann ersten Zyklus starten UND Startmeldung senden
+    print("Hydroponic Cycle: Warte kurz (3 Sek.)...");
+    Timer.set(3000, false, function() {
+        print("Hydroponic Cycle Script: Starte ersten Zykluslauf.");
+        // Sicherstellen, dass der Startzustand "AUS" ist
+        Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function() {
+            isCurrentlyOn = false;
+            // Starte den ersten Durchlauf des Zyklus
+            runPumpCycle();
+
+            // Startbenachrichtigung senden (vereinfachte Nachricht)
+            if (CONFIG_ENABLE_NOTIFICATIONS && CONFIG_TELEGRAM_BOT_TOKEN !== "DEIN_BOT_TOKEN_HIER_EINFUEGEN" && CONFIG_TELEGRAM_CHAT_ID !== "DEINE_CHAT_ID_HIER_EINFUEGEN") {
+                notificationSent = false; // Reset für Start-Nachricht
+                sendNotification("Hydroponic script (Fixed Times) gestartet.");
+            }
+        });
+    });
+    // *** ENTFERNT: Planung des täglichen Sonnenzeiten-Updates ***
+}
+
+// --- Skriptstart ---
+// Ruft die Initialisierungsfunktion auf, um alles zu starten.
+initializeCycle();
