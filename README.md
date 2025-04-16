@@ -7,8 +7,4 @@ BENACHRICHTIGUNG: Sendet Status- und Fehlermeldungen über einen Telegram Bot.
                  - Benachrichtigung bei Skriptstart.
                  - Benachrichtigung bei kritischen Timer-Fehlern.
 
-AUTOR: themarv
-VERSION: 5.0 (Fixed Times)
-DATUM: 2025-04-16 (Anpassungsdatum)
-
 BITTE KONFIGURATION ANPASSEN UND GRÜNDLICH TESTEN! NUTZUNG AUF EIGENE VERANTWORTUNG.
