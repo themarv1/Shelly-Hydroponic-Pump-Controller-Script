@@ -1,19 +1,12 @@
-// Shelly Hydroponic Pump Controller Script v8.1 (English Comments/Logs)
+// Shelly Hydroponic Pump Controller Script v1.1 (Uptime Kuma Heartbeat)
 // ------------------------------------------------------------------------------------------
-// This script controls a pump (connected to Shelly Switch 0) for a hydroponic system.
+// This script controls a pump (connected to Shelly Switch) for a hydroponic system.
 // It uses continuous ON/OFF cycles with different durations for day and night.
 // Day/Night periods are determined by fixed hours configured below.
-// Location settings in the Shelly are NOT relevant for this script.
-//
-// NOTIFICATION: Sends status and error messages via a Telegram Bot.
-//                  - LOUD notification on script startup.
-//                  - SILENT notification when switching between Day and Night mode.
-//                  - SILENT daily status message ("All OK").
-//                  - Optional SILENT debug messages for each pump switch action.
-//                  - LOUD notification for critical timer errors.
+// Includes advanced Telegram notifications and optional Uptime Kuma heartbeat pings.
 //
 // AUTHOR: themarv1 (KI assistet by Google Gemini)
-// VERSION: 8.1
+// VERSION: 1.1 (Uptime Kuma Heartbeat)
 // DATE: 2025-04-24 (Adaptation date)
 //
 // PLEASE ADJUST CONFIGURATION AND TEST THOROUGHLY! USE AT YOUR OWN RISK.
@@ -51,6 +44,15 @@ let CONFIG_DEBUG_PUMP_NOTIFICATIONS = false;
 // Hour for daily status message (0-23)
 let CONFIG_DAILY_STATUS_HOUR = 8; // Example: 08:00 AM
 
+// --- UPTIME KUMA CONFIGURATION ---
+// Enable Uptime Kuma heartbeat pings? (true or false)
+let CONFIG_UPTIME_KUMA_ENABLE = false;
+// The full Push URL from your Uptime Kuma monitor - !! REPLACE THIS !!
+let CONFIG_UPTIME_KUMA_PUSH_URL = "YOUR_UPTIME_KUMA_PUSH_URL_HERE";
+// Interval in seconds to send the heartbeat (e.g., 300 for 5 minutes)
+// Should be slightly less than or equal to the interval configured in Uptime Kuma
+let CONFIG_UPTIME_KUMA_INTERVAL_SEC = 300;
+
 // --- END CONFIGURATION ---
 
 // Global Variables (do not change)
@@ -59,6 +61,7 @@ let isCurrentlyOn = false; // Current state of the pump according to the script
 let notificationSent = false; // Primarily prevents spamming repeated timer errors
 let wasPreviouslyDayTime = null; // State of the previous period for switch detection
 let dailyStatusTimerHandle = null; // Timer for daily status
+let kumaTimerHandle = null; // Timer for Uptime Kuma heartbeats
 
 // Function to escape HTML characters for Telegram messages (manual version)
 function escapeHtml(text) {
@@ -76,199 +79,128 @@ function escapeHtml(text) {
 
 // Function to send a notification via Telegram Bot API (with silent option)
 function sendNotification(message, isSilent) {
-  // Default is LOUD (isSilent = false)
+  // ... (Function content remains the same as in v8.1) ...
   isSilent = (typeof isSilent === 'boolean' && isSilent);
-
-  if (!CONFIG_ENABLE_NOTIFICATIONS || CONFIG_TELEGRAM_BOT_TOKEN === "DEIN_BOT_TOKEN_HIER_EINFUEGEN" || CONFIG_TELEGRAM_CHAT_ID === "DEINE_CHAT_ID_HIER_EINFUEGEN") {
-    print("Notifications disabled or Bot Token/Chat ID not configured.");
-    return;
-  }
-  // Prevent spam only for repeated LOUD timer errors
-  if (notificationSent && !isSilent && (message.indexOf("Timer delay") !== -1 || message.indexOf("Error") !== -1)) {
-      print("Notification already sent for current error state. Skipping duplicate LOUD error message.");
-      return;
-  }
-
+  if (!CONFIG_ENABLE_NOTIFICATIONS || CONFIG_TELEGRAM_BOT_TOKEN === "DEIN_BOT_TOKEN_HIER_EINFUEGEN" || CONFIG_TELEGRAM_CHAT_ID === "DEINE_CHAT_ID_HIER_EINFUEGEN") { print("Notifications disabled or Bot Token/Chat ID not configured."); return; }
+  if (notificationSent && !isSilent && (message.indexOf("Timer delay") !== -1 || message.indexOf("Error") !== -1)) { print("Notification already sent for current error state. Skipping duplicate LOUD error message."); return; }
   print((isSilent ? "(Silent) " : "(LOUD) ") + "Sending Telegram notification: " + message);
-
   let telegramUrl = "https://api.telegram.org/bot" + CONFIG_TELEGRAM_BOT_TOKEN + "/sendMessage";
   let messageText = "<b>Shelly Hydroponic Alert:</b>\n" + escapeHtml(message);
   let payload = { chat_id: CONFIG_TELEGRAM_CHAT_ID, text: messageText, parse_mode: "HTML" };
-
-  // Add disable_notification if message should be silent
-  if (isSilent) {
-    payload.disable_notification = true;
-  }
-
-  // Reset flag BEFORE sending a LOUD message to ensure it always tries (unless repeated error)
-  if (!isSilent) {
-    notificationSent = false;
-  }
-
+  if (isSilent) { payload.disable_notification = true; }
+  if (!isSilent) { notificationSent = false; }
   Shelly.call("HTTP.POST", { url: telegramUrl, headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload), timeout: 15, ssl_ca: "*" },
     function(res, error_code, error_msg) {
       let success = false;
-      if (error_code === 0 && res && res.code === 200) {
-        let responseBody = null;
-        try { responseBody = JSON.parse(res.body); if (responseBody.ok === true) { success = true; } }
-        catch (e) { print("Could not parse Telegram response as JSON."); }
-      }
-
-      if (success) {
-        print("Telegram notification sent successfully.");
-      } else {
-        print("Error sending Telegram notification: Code=" + error_code + ", Msg=" + error_msg + ", HTTP-Code=" + (res ? res.code : "N/A") + ", Body: " + (res ? res.body : "N/A"));
-        // Set flag only on FAILURE of sending a LOUD message to prevent spam
-        if (!isSilent) {
-             notificationSent = true;
-             print("Set notificationSent flag due to LOUD message failure.");
-        }
-      }
+      if (error_code === 0 && res && res.code === 200) { let rb = null; try { rb = JSON.parse(res.body); if (rb.ok === true) { success = true; } } catch (e) { print("Could not parse Telegram response as JSON."); } }
+      if (success) { print("Telegram notification sent successfully."); }
+      else { print("Error sending Telegram notification: Code=" + error_code + ", Msg=" + error_msg + ", HTTP-Code=" + (res ? res.code : "N/A") + ", Body: " + (res ? res.body : "N/A")); if (!isSilent) { notificationSent = true; print("Set notificationSent flag due to LOUD message failure."); } }
     }
   );
 }
 
+// *** NEW: Function to send Uptime Kuma Heartbeat ***
+function sendUptimeKumaHeartbeat() {
+    // Check if feature is enabled and URL is valid
+    if (!CONFIG_UPTIME_KUMA_ENABLE || CONFIG_UPTIME_KUMA_PUSH_URL === "YOUR_UPTIME_KUMA_PUSH_URL_HERE" || CONFIG_UPTIME_KUMA_PUSH_URL.length < 15) { // Basic URL check
+        // Feature disabled or URL not set, do nothing.
+        // print("Uptime Kuma heartbeat disabled or URL not configured."); // Optional: log only once maybe
+        return;
+    }
+    print("Sending Uptime Kuma heartbeat...");
+    Shelly.call("HTTP.GET", {
+            url: CONFIG_UPTIME_KUMA_PUSH_URL,
+            timeout: 10 // Short timeout is sufficient for heartbeat
+        },
+        function (res, error_code, error_msg) {
+            // We only log errors here. Uptime Kuma detects missing heartbeats.
+            if (!(error_code === 0 && res && res.code === 200)) {
+                 print("Error sending Uptime Kuma heartbeat: Code=" + error_code + ", Msg=" + error_msg + ", HTTP-Code=" + (res ? res.code : "N/A"));
+            }
+             // Optional: Log success occasionally, e.g. using a counter? Keep console clean for now.
+             // else { print("Uptime Kuma heartbeat sent successfully."); }
+        }
+    );
+}
+
+
 // Main function for the pump cycle (v6 logic) with advanced notifications
 function runPumpCycle() {
+  // ... (Function content remains the same as in v8.1) ...
   // Clear existing timer
-  if (timerHandle !== null) {
-    Timer.clear(timerHandle);
-    timerHandle = null;
-  }
-
-  let currentOnDurationMin = 0;
-  let currentOffDurationMin = 0;
-  let mode = "";
-  let timeNow = new Date();
-  let currentHour = timeNow.getHours();
-  // Determine Day/Night based on fixed hours
+  if (timerHandle !== null) { Timer.clear(timerHandle); timerHandle = null; }
+  let currentOnDurationMin = 0; let currentOffDurationMin = 0; let mode = ""; let timeNow = new Date(); let currentHour = timeNow.getHours();
   let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR);
-
   // Check for Day/Night switch and send silent notification
-  // Only executes if wasPreviouslyDayTime has been set (not on the very first run)
-  if (wasPreviouslyDayTime !== null && isDayTime !== wasPreviouslyDayTime) {
-    let switchMessage = "Switching to " + (isDayTime ? "Day" : "Night") + " mode.";
-    sendNotification(switchMessage, true); // true = Send silently
-  }
-  // Remember current state for the next check
-  wasPreviouslyDayTime = isDayTime;
-
+  if (wasPreviouslyDayTime !== null && isDayTime !== wasPreviouslyDayTime) { let switchMessage = "Switching to " + (isDayTime ? "Day" : "Night") + " mode."; sendNotification(switchMessage, true); }
+  wasPreviouslyDayTime = isDayTime; // Remember current state
   // Set cycle durations based on Day/Night
-  if (isDayTime) {
-    currentOnDurationMin = CONFIG_DAY_ON_MIN;
-    currentOffDurationMin = CONFIG_DAY_OFF_MIN;
-    mode = "Day (Fixed Times)";
-  } else {
-    currentOnDurationMin = CONFIG_NIGHT_ON_MIN;
-    currentOffDurationMin = CONFIG_NIGHT_OFF_MIN;
-    mode = "Night (Fixed Times)";
-  }
+  if (isDayTime) { currentOnDurationMin = CONFIG_DAY_ON_MIN; currentOffDurationMin = CONFIG_DAY_OFF_MIN; mode = "Day (Fixed Times)"; }
+  else { currentOnDurationMin = CONFIG_NIGHT_ON_MIN; currentOffDurationMin = CONFIG_NIGHT_OFF_MIN; mode = "Night (Fixed Times)"; }
   print("Hydroponic Cycle: Mode: " + mode + ". Cycle: " + currentOnDurationMin + "min ON / " + currentOffDurationMin + "min OFF.");
-
   // Determine next action and execute
-  let nextTimerDelaySec = 0;
-  let nextActionIsOn = !isCurrentlyOn; // What should happen next?
-
-  if (nextActionIsOn) {
-    // Switch Pump ON
+  let nextTimerDelaySec = 0; let nextActionIsOn = !isCurrentlyOn;
+  if (nextActionIsOn) { // Switch Pump ON
     print("Switching pump ON.");
-    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true}, function(res, err_code, err_msg){
-        if(err_code === 0){
-            print("Hydroponic Cycle: Pump switched ON.");
-            // Optional Debug message for Pump ON
-            if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned ON (Cycle).", true); }
-        } else { print("ERROR switching pump ON: Code "+err_code + ", Msg: "+err_msg);}
-   });
-    isCurrentlyOn = true;
-    nextTimerDelaySec = currentOnDurationMin * 60; // Next action (OFF) after ON duration
-    print("Hydroponic Cycle: Next action (OFF) scheduled in " + currentOnDurationMin + " minutes.");
-  } else {
-    // Switch Pump OFF
+    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true}, function(res, err_code, err_msg){ if(err_code === 0){ print("Hydroponic Cycle: Pump switched ON."); if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned ON (Cycle).", true); } } else { print("ERROR switching pump ON: Code "+err_code + ", Msg: "+err_msg);} });
+    isCurrentlyOn = true; nextTimerDelaySec = currentOnDurationMin * 60; print("Hydroponic Cycle: Next action (OFF) scheduled in " + currentOnDurationMin + " minutes.");
+  } else { // Switch Pump OFF
     print("Switching pump OFF.");
-    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function(res, err_code, err_msg){
-        if(err_code === 0){
-            print("Hydroponic Cycle: Pump switched OFF.");
-            // Optional Debug message for Pump OFF
-            if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned OFF (Cycle).", true); }
-        } else { print("ERROR switching pump OFF: Code "+err_code + ", Msg: "+err_msg);}
-   });
-    isCurrentlyOn = false;
-    nextTimerDelaySec = currentOffDurationMin * 60; // Next action (ON) after OFF duration
-    print("Hydroponic Cycle: Next action (ON) scheduled in " + currentOffDurationMin + " minutes.");
+    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function(res, err_code, err_msg){ if(err_code === 0){ print("Hydroponic Cycle: Pump switched OFF."); if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned OFF (Cycle).", true); } } else { print("ERROR switching pump OFF: Code "+err_code + ", Msg: "+err_msg);} });
+    isCurrentlyOn = false; nextTimerDelaySec = currentOffDurationMin * 60; print("Hydroponic Cycle: Next action (ON) scheduled in " + currentOffDurationMin + " minutes.");
   }
-
   // Set timer for the next execution
-  if (nextTimerDelaySec > 0) {
-      timerHandle = Timer.set(nextTimerDelaySec * 1000, false, runPumpCycle);
-  } else {
-      // Prevents infinite loop if delay is invalid
-      print("Hydroponic Cycle: Error - Timer delay is zero or negative. Stopping cycle.");
-      // Reset notificationSent flag before sending LOUD critical error
-      notificationSent = false;
-      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped to prevent issues!", false); // false = Send LOUD
-      // DO NOT set a new timer here, the cycle stops.
-  }
+  if (nextTimerDelaySec > 0) { timerHandle = Timer.set(nextTimerDelaySec * 1000, false, runPumpCycle); }
+  else { print("Hydroponic Cycle: Error - Timer delay is zero or negative. Stopping cycle."); notificationSent = false; sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped to prevent issues!", false); }
 }
 
 // Function to send the daily status report
 function sendDailyStatus() {
-  let timeNow = new Date();
-  let currentHour = timeNow.getHours();
-  let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR);
-  let currentMode = isDayTime ? "Day (Fixed Times)" : "Night (Fixed Times)";
-  // Get current pump status directly from device (asynchronous!)
+  // ... (Function content remains the same as in v8.1) ...
+  let timeNow = new Date(); let currentHour = timeNow.getHours(); let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR); let currentMode = isDayTime ? "Day (Fixed Times)" : "Night (Fixed Times)";
   Shelly.call("Switch.GetStatus", {'id': CONFIG_SWITCH_ID}, function(result){
-      let pumpState = "Unknown";
-      if(result && typeof result.output !== 'undefined'){
-          pumpState = result.output ? "ON" : "OFF"; // Check 'output' status
-      } else if (result && typeof result.ison !== 'undefined'){
-          pumpState = result.ison ? "ON" : "OFF"; // Fallback for older/different status structure
-      }
-      let message = "Daily Status: Script running OK.\n" +
-                    "Current Mode: " + currentMode + "\n" +
-                    "Pump is currently: " + pumpState;
-                    // Optional: Add more info here, e.g., Shelly Uptime (would require Shelly.GetStatus)
-
-      print("Sending daily status report...");
-      sendNotification(message, true); // true = Send silently
+      let pumpState = "Unknown"; if(result && typeof result.output !== 'undefined'){ pumpState = result.output ? "ON" : "OFF"; } else if (result && typeof result.ison !== 'undefined'){ pumpState = result.ison ? "ON" : "OFF"; }
+      let message = "Daily Status: Script running OK.\n" + "Current Mode: " + currentMode + "\n" + "Pump is currently: " + pumpState;
+      print("Sending daily status report..."); sendNotification(message, true); // true = Send silently
   });
 }
 
-// Function to initialize timers and start the first cycle
+// Function to initialize timers and start the first cycle (MODIFIED to schedule Kuma timer)
 function initializeCycle() {
-    print("Hydroponic Cycle Script (Cycles, Adv. Notify): Initializing...");
+    print("Hydroponic Cycle Script (Cycles, Adv. Notify, Kuma): Initializing...");
     notificationSent = false; // Reset notification flag on script start
 
     // Set initial Day/Night state for switch detection
-    let initTime = new Date();
-    let initHour = initTime.getHours();
+    let initTime = new Date(); let initHour = initTime.getHours();
     wasPreviouslyDayTime = (initHour >= CONFIG_DAY_START_HOUR && initHour < CONFIG_DAY_END_HOUR);
     print("Initial mode determined: " + (wasPreviouslyDayTime ? "Day" : "Night"));
 
     // Schedule the daily status timer
     if (dailyStatusTimerHandle !== null) Timer.clear(dailyStatusTimerHandle);
-    let now = new Date();
-    let targetTimeToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), CONFIG_DAILY_STATUS_HOUR, 0, 0, 0); // Target time today
-    let msToTarget = targetTimeToday.getTime() - now.getTime();
-    // If target time today has already passed, schedule for tomorrow
-    if (msToTarget < 0) {
-        msToTarget += 24 * 60 * 60 * 1000; // Add 24 hours in milliseconds
-    }
-    // Set timer: First run after msToTarget, repeat every 24 hours
+    let now = new Date(); let targetTimeToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), CONFIG_DAILY_STATUS_HOUR, 0, 0, 0);
+    let msToTarget = targetTimeToday.getTime() - now.getTime(); if (msToTarget < 0) { msToTarget += 24 * 60 * 60 * 1000; }
     dailyStatusTimerHandle = Timer.set(msToTarget, true, sendDailyStatus);
     print("Daily status report scheduled for " + CONFIG_DAILY_STATUS_HOUR + ":00 (next run in approx. " + Math.round(msToTarget/60000) + " min).");
 
+    // *** NEU: Schedule Uptime Kuma Heartbeat Timer ***
+    if (kumaTimerHandle !== null) { Timer.clear(kumaTimerHandle); }
+    if (CONFIG_UPTIME_KUMA_ENABLE && CONFIG_UPTIME_KUMA_PUSH_URL !== "YOUR_UPTIME_KUMA_PUSH_URL_HERE" && CONFIG_UPTIME_KUMA_PUSH_URL.length > 15) { // Basic URL check
+        // Convert interval to milliseconds, ensure minimum interval (e.g., 60s to avoid spamming)
+        let intervalMs = Math.max(CONFIG_UPTIME_KUMA_INTERVAL_SEC, 60) * 1000;
+        // Send first heartbeat immediately after a short delay, then repeat
+        Timer.set(1000, false, sendUptimeKumaHeartbeat); // Send first ping after 1 sec
+        kumaTimerHandle = Timer.set(intervalMs, true, sendUptimeKumaHeartbeat); // Repeat timer
+        print("Uptime Kuma heartbeat scheduled every " + (intervalMs / 1000) + " seconds.");
+    } else {
+        print("Uptime Kuma heartbeat disabled or URL not configured.");
+    }
 
     // Short delay, then start first cycle AND send LOUD startup notification
     print("Hydroponic Cycle: Waiting briefly (3 sec)...");
     Timer.set(3000, false, function() {
         print("Hydroponic Cycle Script: Starting first cycle run.");
-        // Ensure pump starts in OFF state
         Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function() {
-            isCurrentlyOn = false;
-            // Start the first cycle run
-            runPumpCycle();
-
+            isCurrentlyOn = false; runPumpCycle(); // Start the first cycle run
             // Send LOUD startup notification
             if (CONFIG_ENABLE_NOTIFICATIONS && CONFIG_TELEGRAM_BOT_TOKEN !== "DEIN_BOT_TOKEN_HIER_EINFUEGEN" && CONFIG_TELEGRAM_CHAT_ID !== "DEINE_CHAT_ID_HIER_EINFUEGEN") {
                 notificationSent = false; // Reset for LOUD startup message
