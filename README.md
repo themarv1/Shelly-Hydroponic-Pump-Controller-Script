@@ -99,20 +99,24 @@ let CONFIG_MSG_TIMER_ERROR = "<b>🚨 CRITICAL ERROR: Timer Delay Zero!</b>\nCyc
 
 ### Changelog
 
-**v1.2** (2025-04-29)
+**v1.2 DEV** (*2025-04-29*)
 * Added configurable message templates for all Telegram notifications. Centralized message texts in the configuration section.
 
-**v1.1** (*YYYY-MM-DD* - Please fill in date)
+**v1.1 DEV** (*2025-04-24*)
 * Added optional Uptime Kuma Push/Heartbeat monitoring.
 * Added configuration variables for Uptime Kuma integration.
 
-**v1.0** (*YYYY-MM-DD* - Please fill in date of your initial release)
+**v1.0** (*2025-04-24*)
 * Initial release based on script version 8.1.
 * Features: Fixed day/night cycles, configurable durations, advanced Telegram notifications (loud start/error, silent switch/daily/debug), English comments and logs.
 
+**v0.1** (*2025-04-16*)
+* Initial release only for testing
+* Features: day/night cycles, configurable durations, Telegram notifications
+
 ### License
 
-This project is licensed under the MIT License. (You should include the actual license text or a LICENSE file).
+This project is licensed under the MIT License.
 
 ### Disclaimer
 
@@ -215,20 +219,22 @@ let CONFIG_MSG_TIMER_ERROR = "<b>🚨 CRITICAL ERROR: Timer Delay Zero!</b>\nCyc
 
 ### Changelog (Änderungsprotokoll)
 
-**v1.2** (2025-04-29)
+**v1.2 DEV** (*2025-04-29*)
 * Konfigurierbare Nachrichten-Vorlagen für alle Telegram-Benachrichtigungen hinzugefügt. Zentralisierung der Nachrichtentexte im Konfigurationsbereich.
 
-**v1.1** (*JJJJ-MM-TT* - Bitte Datum eintragen)
+**v1.1 DEV** (*2025-04-25*)
 * Optionale Uptime Kuma Push/Heartbeat Überwachung hinzugefügt.
 * Konfigurationsvariablen für Uptime Kuma Integration hinzugefügt.
 
-**v1.0** (*JJJJ-MM-TT* - Bitte Datum deines Releases eintragen)
+**v1.0** (*2025-04-25*)
 * Erstes Release basierend auf Skript Version 8.1.
 * Funktionen: Feste Tag-/Nachtzyklen, konfigurierbare Dauern, erweiterte Telegram-Benachrichtigungen, englische Kommentare und Logs.
 
-### Lizenz
+**v0.1** (*2025-04-16*)
+* Test Release.
+* Funktionen: Feste Tag-/Nachtzyklen, konfigurierbare Dauern, Telegram-Benachrichtigungen
 
-Dieses Projekt ist unter der MIT-Lizenz lizenziert. (Du solltest den eigentlichen Lizenztext oder eine LICENSE-Datei beifügen).
+Dieses Projekt ist unter der MIT-Lizenz lizenziert.
 
 ### Haftungsausschluss
 
