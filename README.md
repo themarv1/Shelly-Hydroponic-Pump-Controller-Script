@@ -92,7 +92,7 @@ let CONFIG_DAILY_STATUS_HOUR = 8; // Example: 08:00 AM
 
 ### License
 
-This project is licensed under the MIT License - see the LICENSE file for details (or add MIT License text here).
+This project is licensed under the MIT License.
 
 ### Disclaimer
 
@@ -188,7 +188,7 @@ let CONFIG_DAILY_STATUS_HOUR = 8; // Beispiel: 08:00 Uhr morgens
 
 ### Lizenz
 
-Dieses Projekt ist unter der MIT-Lizenz lizenziert - siehe die LICENSE-Datei für Details (oder füge hier den MIT-Lizenztext ein).
+Dieses Projekt ist unter der MIT-Lizenz lizenziert.
 
 ### Haftungsausschluss
 
