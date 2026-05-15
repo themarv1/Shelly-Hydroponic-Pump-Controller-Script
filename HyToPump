@@ -1,7 +1,8 @@
-// Shelly Hydroponic Pump Controller Script v8.2 (English Comments/Logs)
+// Shelly Hydroponic Pump Controller Script v8.3 (English Comments/Logs)
 // ------------------------------------------------------------------------------------------
 // This script controls a pump (connected to Shelly Switch 0) for a hydroponic system.
-// It uses continuous ON/OFF cycles with different durations for day and night.
+// Day mode (06:00-22:00): pump runs continuously.
+// Night mode (22:00-06:00): timed ON/OFF cycles.
 // Day/Night periods are determined by fixed hours configured below.
 // Location settings in the Shelly are NOT relevant for this script.
 //
@@ -13,7 +14,7 @@
 //                  - LOUD notification for critical timer errors.
 //
 // AUTHOR: themarv1 (KI assistet by Google Gemini)
-// VERSION: 8.2
+// VERSION: 8.3
 // DATE: 2025-04-24 (Adaptation date)
 //
 // PLEASE ADJUST CONFIGURATION AND TEST THOROUGHLY! USE AT YOUR OWN RISK.
@@ -28,16 +29,14 @@ let CONFIG_SWITCH_ID = 0;
 // Hour when the day starts (0-23)
 let CONFIG_DAY_START_HOUR = 6;  // Example: 06:00 AM
 // Hour when the day ends (night starts) (0-23)
-let CONFIG_DAY_END_HOUR = 18;   // Example: 6:00 PM (18:00 is already night)
+let CONFIG_DAY_END_HOUR = 22;   // Example: 10:00 PM
 
 // --- Cycle Duration Configuration ---
-// Duration in minutes for the DAY cycle (between START_HOUR and END_HOUR)
-let CONFIG_DAY_ON_MIN = 15;     // Pump ON for 15 minutes
-let CONFIG_DAY_OFF_MIN = 45;    // Pump OFF for 45 minutes
+// Day mode: pump runs continuously (no ON/OFF cycle needed)
 
 // Duration in minutes for the NIGHT cycle (before START_HOUR and from END_HOUR onwards)
 let CONFIG_NIGHT_ON_MIN = 15;   // Pump ON for 15 minutes
-let CONFIG_NIGHT_OFF_MIN = 180; // Pump OFF for 3 hours
+let CONFIG_NIGHT_OFF_MIN = 45;  // Pump OFF for 45 minutes
 
 // --- NOTIFICATION CONFIGURATION ---
 // Enable notifications globally? (true or false)
@@ -128,7 +127,16 @@ function sendNotification(message, isSilent) {
   );
 }
 
-// Main function for the pump cycle (v6 logic) with advanced notifications
+// Returns milliseconds until the next occurrence of the given hour (0-23)
+function calcMsToHour(hour) {
+  let now = new Date();
+  let target = new Date(now.getFullYear(), now.getMonth(), now.getDate(), hour, 0, 0, 0);
+  let ms = target.getTime() - now.getTime();
+  if (ms <= 0) ms += 24 * 60 * 60 * 1000;
+  return ms;
+}
+
+// Main function for the pump cycle
 function runPumpCycle() {
   // Clear existing timer
   if (timerHandle !== null) {
@@ -136,9 +144,6 @@ function runPumpCycle() {
     timerHandle = null;
   }
 
-  let currentOnDurationMin = 0;
-  let currentOffDurationMin = 0;
-  let mode = "";
   let timeNow = new Date();
   let currentHour = timeNow.getHours();
   // Determine Day/Night based on fixed hours
@@ -153,60 +158,60 @@ function runPumpCycle() {
   // Remember current state for the next check
   wasPreviouslyDayTime = isDayTime;
 
-  // Set cycle durations based on Day/Night
   if (isDayTime) {
-    currentOnDurationMin = CONFIG_DAY_ON_MIN;
-    currentOffDurationMin = CONFIG_DAY_OFF_MIN;
-    mode = "Day (Fixed Times)";
+    // Day mode: pump runs continuously, timer wakes up at night start
+    print("Hydroponic Cycle: Mode: Day (Continuous). Pump ON until " + CONFIG_DAY_END_HOUR + ":00.");
+    if (!isCurrentlyOn) {
+      Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true}, function(res, err_code, err_msg){
+        if (err_code === 0) {
+          isCurrentlyOn = true;
+          print("Hydroponic Cycle: Pump switched ON (continuous day mode).");
+          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump ON (Day continuous).", true); }
+        } else { print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg); }
+      });
+    } else {
+      print("Hydroponic Cycle: Pump already ON.");
+    }
+    let msToNight = calcMsToHour(CONFIG_DAY_END_HOUR);
+    print("Hydroponic Cycle: Night mode starts in approx. " + Math.round(msToNight/60000) + " min.");
+    timerHandle = Timer.set(msToNight, false, runPumpCycle);
   } else {
-    currentOnDurationMin = CONFIG_NIGHT_ON_MIN;
-    currentOffDurationMin = CONFIG_NIGHT_OFF_MIN;
-    mode = "Night (Fixed Times)";
-  }
-  print("Hydroponic Cycle: Mode: " + mode + ". Cycle: " + currentOnDurationMin + "min ON / " + currentOffDurationMin + "min OFF.");
+    // Night mode: timed ON/OFF cycles
+    print("Hydroponic Cycle: Mode: Night (Cycles). " + CONFIG_NIGHT_ON_MIN + "min ON / " + CONFIG_NIGHT_OFF_MIN + "min OFF.");
+    let nextTimerDelaySec = 0;
+    let nextActionIsOn = !isCurrentlyOn;
 
-  // Determine next action and execute
-  let nextTimerDelaySec = 0;
-  let nextActionIsOn = !isCurrentlyOn; // What should happen next?
+    if (nextActionIsOn) {
+      print("Switching pump ON.");
+      Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true}, function(res, err_code, err_msg){
+        if (err_code === 0) {
+          isCurrentlyOn = true;
+          print("Hydroponic Cycle: Pump switched ON.");
+          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned ON (Cycle).", true); }
+        } else { print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg); }
+      });
+      nextTimerDelaySec = CONFIG_NIGHT_ON_MIN * 60;
+      print("Hydroponic Cycle: Next action (OFF) in " + CONFIG_NIGHT_ON_MIN + " minutes.");
+    } else {
+      print("Switching pump OFF.");
+      Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function(res, err_code, err_msg){
+        if (err_code === 0) {
+          isCurrentlyOn = false;
+          print("Hydroponic Cycle: Pump switched OFF.");
+          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned OFF (Cycle).", true); }
+        } else { print("ERROR switching pump OFF: Code "+err_code+", Msg: "+err_msg); }
+      });
+      nextTimerDelaySec = CONFIG_NIGHT_OFF_MIN * 60;
+      print("Hydroponic Cycle: Next action (ON) in " + CONFIG_NIGHT_OFF_MIN + " minutes.");
+    }
 
-  if (nextActionIsOn) {
-    // Switch Pump ON
-    print("Switching pump ON.");
-    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': true}, function(res, err_code, err_msg){
-        if(err_code === 0){
-            isCurrentlyOn = true;
-            print("Hydroponic Cycle: Pump switched ON.");
-            // Optional Debug message for Pump ON
-            if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned ON (Cycle).", true); }
-        } else { print("ERROR switching pump ON: Code "+err_code + ", Msg: "+err_msg);}
-   });
-    nextTimerDelaySec = currentOnDurationMin * 60; // Next action (OFF) after ON duration
-    print("Hydroponic Cycle: Next action (OFF) scheduled in " + currentOnDurationMin + " minutes.");
-  } else {
-    // Switch Pump OFF
-    print("Switching pump OFF.");
-    Shelly.call("Switch.Set", {'id': CONFIG_SWITCH_ID, 'on': false}, function(res, err_code, err_msg){
-        if(err_code === 0){
-            isCurrentlyOn = false;
-            print("Hydroponic Cycle: Pump switched OFF.");
-            // Optional Debug message for Pump OFF
-            if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned OFF (Cycle).", true); }
-        } else { print("ERROR switching pump OFF: Code "+err_code + ", Msg: "+err_msg);}
-   });
-    nextTimerDelaySec = currentOffDurationMin * 60; // Next action (ON) after OFF duration
-    print("Hydroponic Cycle: Next action (ON) scheduled in " + currentOffDurationMin + " minutes.");
-  }
-
-  // Set timer for the next execution
-  if (nextTimerDelaySec > 0) {
+    if (nextTimerDelaySec > 0) {
       timerHandle = Timer.set(nextTimerDelaySec * 1000, false, runPumpCycle);
-  } else {
-      // Prevents infinite loop if delay is invalid
+    } else {
       print("Hydroponic Cycle: Error - Timer delay is zero or negative. Stopping cycle.");
-      // Reset notificationSent flag before sending LOUD critical error
       notificationSent = false;
-      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped to prevent issues!", false); // false = Send LOUD
-      // DO NOT set a new timer here, the cycle stops.
+      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped!", false);
+    }
   }
 }
 
