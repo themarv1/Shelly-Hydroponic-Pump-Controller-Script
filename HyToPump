@@ -1,4 +1,4 @@
-// Shelly Hydroponic Pump Controller Script v8.3 (English Comments/Logs)
+// Shelly Hydroponic Pump Controller Script v8.4 (English Comments/Logs)
 // ------------------------------------------------------------------------------------------
 // This script controls a pump (connected to Shelly Switch 0) for a hydroponic system.
 // Day mode (06:00-22:00): pump runs continuously.
@@ -14,7 +14,7 @@
 //                  - LOUD notification for critical timer errors.
 //
 // AUTHOR: themarv1
-// VERSION: 8.3
+// VERSION: 8.4
 // DATE: 2025-04-24 (Adaptation date)
 //
 // PLEASE ADJUST CONFIGURATION AND TEST THOROUGHLY! USE AT YOUR OWN RISK.
@@ -82,8 +82,8 @@ function sendNotification(message, isSilent) {
     print("Notifications disabled or Bot Token/Chat ID not configured.");
     return;
   }
-  // Prevent spam only for repeated LOUD timer errors
-  if (notificationSent && !isSilent && (message.indexOf("Timer delay") !== -1 || message.indexOf("Error") !== -1)) {
+  // Prevent spam only for repeated LOUD error messages
+  if (notificationSent && !isSilent && message.indexOf("FEHLER") !== -1) {
       print("Notification already sent for current error state. Skipping duplicate LOUD error message.");
       return;
   }
@@ -91,7 +91,7 @@ function sendNotification(message, isSilent) {
   print((isSilent ? "(Silent) " : "(LOUD) ") + "Sending Telegram notification: " + message);
 
   let telegramUrl = "https://api.telegram.org/bot" + CONFIG_TELEGRAM_BOT_TOKEN + "/sendMessage";
-  let messageText = "<b>Shelly Hydroponic Alert:</b>\n" + escapeHtml(message);
+  let messageText = escapeHtml(message);
   let payload = { chat_id: CONFIG_TELEGRAM_CHAT_ID, text: messageText, parse_mode: "HTML" };
 
   // Add disable_notification if message should be silent
@@ -152,7 +152,7 @@ function runPumpCycle() {
   // Check for Day/Night switch and send silent notification
   // Only executes if wasPreviouslyDayTime has been set (not on the very first run)
   if (wasPreviouslyDayTime !== null && isDayTime !== wasPreviouslyDayTime) {
-    let switchMessage = "Switching to " + (isDayTime ? "Day" : "Night") + " mode.";
+    let switchMessage = isDayTime ? "☀️ Wechsel auf Tag-Modus" : "🌙 Wechsel auf Nacht-Modus";
     sendNotification(switchMessage, true); // true = Send silently
   }
   // Remember current state for the next check
@@ -166,7 +166,7 @@ function runPumpCycle() {
         if (err_code === 0) {
           isCurrentlyOn = true;
           print("Hydroponic Cycle: Pump switched ON (continuous day mode).");
-          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump ON (Day continuous).", true); }
+          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("💧 Pumpe EIN (Tagdauerbetrieb)", true); }
         } else { print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg); }
       });
     } else {
@@ -187,7 +187,7 @@ function runPumpCycle() {
         if (err_code === 0) {
           isCurrentlyOn = true;
           print("Hydroponic Cycle: Pump switched ON.");
-          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned ON (Cycle).", true); }
+          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("💧 Pumpe EIN (Zyklus)", true); }
         } else { print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg); }
       });
       nextTimerDelaySec = CONFIG_NIGHT_ON_MIN * 60;
@@ -198,7 +198,7 @@ function runPumpCycle() {
         if (err_code === 0) {
           isCurrentlyOn = false;
           print("Hydroponic Cycle: Pump switched OFF.");
-          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("Pump turned OFF (Cycle).", true); }
+          if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("💧 Pumpe AUS (Zyklus)", true); }
         } else { print("ERROR switching pump OFF: Code "+err_code+", Msg: "+err_msg); }
       });
       nextTimerDelaySec = CONFIG_NIGHT_OFF_MIN * 60;
@@ -210,7 +210,7 @@ function runPumpCycle() {
     } else {
       print("Hydroponic Cycle: Error - Timer delay is zero or negative. Stopping cycle.");
       notificationSent = false;
-      sendNotification("Hydroponic Script Error: Timer delay was zero or negative ("+ nextTimerDelaySec + "s). Cycle stopped!", false);
+      sendNotification("⚠️ FEHLER: Timer-Delay ungültig (" + nextTimerDelaySec + "s)\nZyklus gestoppt – Shelly neu starten!", false);
     }
   }
 }
@@ -220,19 +220,19 @@ function sendDailyStatus() {
   let timeNow = new Date();
   let currentHour = timeNow.getHours();
   let isDayTime = (currentHour >= CONFIG_DAY_START_HOUR && currentHour < CONFIG_DAY_END_HOUR);
-  let currentMode = isDayTime ? "Day (Fixed Times)" : "Night (Fixed Times)";
+  let currentMode = isDayTime ? "Tag (Dauerbetrieb)" : "Nacht (Zyklen)";
   // Get current pump status directly from device (asynchronous!)
   Shelly.call("Switch.GetStatus", {'id': CONFIG_SWITCH_ID}, function(result){
-      let pumpState = "Unknown";
+      let pumpState = "Unbekannt";
       if(result && typeof result.output !== 'undefined'){
-          pumpState = result.output ? "ON" : "OFF"; // Check 'output' status
+          pumpState = result.output ? "AN 💧" : "AUS";
       } else if (result && typeof result.ison !== 'undefined'){
-          pumpState = result.ison ? "ON" : "OFF"; // Fallback for older/different status structure
+          pumpState = result.ison ? "AN 💧" : "AUS";
       }
-      let message = "Daily Status: Script running OK.\n" +
-                    "Current Mode: " + currentMode + "\n" +
-                    "Pump is currently: " + pumpState;
-                    // Optional: Add more info here, e.g., Shelly Uptime (would require Shelly.GetStatus)
+      let message = "🌱 Hydroponic Tower – Tagesstatus\n" +
+                    "Modus: " + currentMode + "\n" +
+                    "Pumpe: " + pumpState + "\n" +
+                    "Alles läuft normal ✓";
 
       print("Sending daily status report...");
       sendNotification(message, true); // true = Send silently
@@ -279,7 +279,9 @@ function initializeCycle() {
             // Send LOUD startup notification
             if (CONFIG_ENABLE_NOTIFICATIONS && CONFIG_TELEGRAM_BOT_TOKEN !== "DEIN_BOT_TOKEN_HIER_EINFUEGEN" && CONFIG_TELEGRAM_CHAT_ID !== "DEINE_CHAT_ID_HIER_EINFUEGEN") {
                 notificationSent = false; // Reset for LOUD startup message
-                sendNotification("Hydroponic script (Cycles) started.", false); // false = LOUD
+                let startMode = wasPreviouslyDayTime ? "Tag (Dauerbetrieb)" : "Nacht (Zyklen)";
+                let startPump = wasPreviouslyDayTime ? "AN 💧" : "Zyklus aktiv 💧";
+                sendNotification("🌱 Hydroponic Controller gestartet\nModus: " + startMode + "\nPumpe: " + startPump, false); // false = LOUD
             }
         });
     });
