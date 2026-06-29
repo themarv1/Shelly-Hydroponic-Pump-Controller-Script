@@ -1,6 +1,8 @@
-# Shelly Hydroponic Pump Controller Script v8.4
+# Shelly Hydroponic Pump Controller Script
 
 Automatisierte Pumpensteuerung für Hydroponic-Systeme auf Shelly-Geräten (Gen2/Gen3) mit Telegram-Benachrichtigungen.
+
+> Script: [`src/hytopump.js`](src/hytopump.js) · Version history: [`CHANGELOG.md`](CHANGELOG.md)
 
 ---
 
@@ -68,7 +70,7 @@ let CONFIG_DAILY_STATUS_HOUR       = 8;       // Hour for daily status message (
 
 1. Open your Shelly device's web UI (enter its IP in a browser).
 2. Go to **Scripts** → **Add Script**.
-3. Give it a name (e.g. `Hydroponic Control`) and paste the full script content.
+3. Give it a name (e.g. `Hydroponic Control`) and paste the full content of [`src/hytopump.js`](src/hytopump.js).
 4. Click **Save**, then enable the script (toggle turns blue).
 
 ### Troubleshooting
@@ -154,7 +156,7 @@ let CONFIG_DAILY_STATUS_HOUR       = 8;       // Stunde für tägliche Statusmel
 
 1. Shelly Web UI aufrufen (IP-Adresse des Geräts im Browser öffnen).
 2. **Scripts** → **Add Script** klicken.
-3. Name vergeben (z.B. `Hydroponic Control`) und den kompletten Skript-Inhalt einfügen.
+3. Name vergeben (z.B. `Hydroponic Control`) und den kompletten Inhalt von [`src/hytopump.js`](src/hytopump.js) einfügen.
 4. **Save** klicken, dann das Skript aktivieren (Schalter wird blau).
 
 ### Fehlerbehebung
