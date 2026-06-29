@@ -64,7 +64,7 @@ let CONFIG_SHELLY_URL = "";  // e.g. "http://192.168.178.42"
 // interval below, e.g. push 60 s / Kuma timeout 180 s).
 let CONFIG_ENABLE_KUMA = true;
 // Kuma push URL WITHOUT query string (the script appends ?status=...&msg=...&ping=...)
-let CONFIG_KUMA_PUSH_URL = "https://status.themarv1.net/api/push/REgIvNfgle";
+let CONFIG_KUMA_PUSH_URL = "https://DEINE-KUMA-URL/api/push/XXXX";  // !! REPLACE THIS !!
 // How often to push, in seconds
 let CONFIG_KUMA_INTERVAL_SEC = 60;
 // Also send a LOUD Telegram alert when a pump fault is detected/cleared?
@@ -317,7 +317,7 @@ function urlMsg(text) {
 // Send a heartbeat to Uptime Kuma. ping carries the active power (W) so Kuma
 // graphs the pump load over time (a step down = a pump dropped out).
 function pushKuma(status, msg, ping) {
-  if (!CONFIG_ENABLE_KUMA || CONFIG_KUMA_PUSH_URL === "") {
+  if (!CONFIG_ENABLE_KUMA || CONFIG_KUMA_PUSH_URL === "" || CONFIG_KUMA_PUSH_URL.indexOf("DEINE-KUMA-URL") !== -1) {
     print("Kuma push disabled or URL not configured.");
     return;
   }
