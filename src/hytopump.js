@@ -1,4 +1,4 @@
-// Shelly Hydroponic Pump Controller Script v8.5 (English Comments/Logs)
+// Shelly Hydroponic Pump Controller Script v8.6 (English Comments/Logs)
 // ------------------------------------------------------------------------------------------
 // This script controls a pump (connected to Shelly Switch 0) for a hydroponic system.
 // Day mode (06:00-22:00): pump runs continuously.
@@ -12,9 +12,15 @@
 //                  - SILENT daily status message ("All OK").
 //                  - Optional SILENT debug messages for each pump switch action.
 //                  - LOUD notification for critical timer errors.
+//                  - LOUD notification when a pump failure is detected (power drop).
+//
+// MONITORING: Periodic heartbeat to Uptime Kuma (so an outage of the Shelly itself
+//             is noticed) plus pump-health from the power meter. All pumps share ONE
+//             switch/meter, so failures are detected from total power draw (how many
+//             pumps run) — not which individual pump.
 //
 // AUTHOR: themarv1
-// VERSION: 8.5
+// VERSION: 8.6
 // DATE: 2025-04-24 (Adaptation date)
 //
 // PLEASE ADJUST CONFIGURATION AND TEST THOROUGHLY! USE AT YOUR OWN RISK.
@@ -52,6 +58,30 @@ let CONFIG_DAILY_STATUS_HOUR = 8; // Example: 08:00 AM
 // Local URL to Shelly web UI – shown as button in error notifications (leave empty to disable)
 let CONFIG_SHELLY_URL = "";  // e.g. "http://192.168.178.42"
 
+// --- UPTIME KUMA MONITORING ---
+// Push a heartbeat to Uptime Kuma. If the Shelly loses power/Wi-Fi, the pushes stop
+// and Kuma reports the monitor as down (set Kuma's heartbeat retry/timeout > the push
+// interval below, e.g. push 60 s / Kuma timeout 180 s).
+let CONFIG_ENABLE_KUMA = true;
+// Kuma push URL WITHOUT query string (the script appends ?status=...&msg=...&ping=...)
+let CONFIG_KUMA_PUSH_URL = "https://status.themarv1.net/api/push/REgIvNfgle";
+// How often to push, in seconds
+let CONFIG_KUMA_INTERVAL_SEC = 60;
+// Also send a LOUD Telegram alert when a pump fault is detected/cleared?
+let CONFIG_KUMA_ALERT_TELEGRAM = true;
+
+// --- PUMP FAILURE DETECTION (shared power meter) ---
+// All pumps hang on ONE switch, so the meter sees their COMBINED draw. We infer how
+// many pumps run from total power; a drop of ~one pump's wattage flags a failure
+// (we cannot tell WHICH pump — that would need per-pump metering).
+let CONFIG_PUMP_COUNT = 3;          // number of pumps on this switch
+let CONFIG_PUMP_WATT_EACH = 14.3;   // ~ measured 42.8 W / 3 pumps — TUNE after watching real data
+let CONFIG_PUMP_OFF_MAX_W = 5;      // power above this while relay is OFF = anomaly (stuck relay / leakage)
+let CONFIG_PUMP_GRACE_SEC = 12;     // ignore power right after a switch (motor inrush / settling)
+// Mains voltage sanity window (230 V nominal, ±10 %)
+let CONFIG_VOLTAGE_MIN = 207;
+let CONFIG_VOLTAGE_MAX = 253;
+
 // --- END CONFIGURATION ---
 
 // Global Variables (do not change)
@@ -60,6 +90,9 @@ let isCurrentlyOn = false; // Current state of the pump according to the script
 let notificationSent = false; // Primarily prevents spamming repeated timer errors
 let wasPreviouslyDayTime = null; // State of the previous period for switch detection
 let dailyStatusTimerHandle = null; // Timer for daily status
+let kumaTimerHandle = null;        // Timer for the periodic Uptime Kuma push
+let lastSwitchMs = 0;              // Timestamp of the last pump (re)switch — for the inrush grace window
+let pumpFaultActive = false;       // True while a pump fault is currently signalled (prevents alert spam)
 
 // Function to escape HTML characters for Telegram messages (manual version)
 function escapeHtml(text) {
@@ -151,6 +184,8 @@ function calcMsToHour(hour) {
 
 // Main function for the pump cycle
 function runPumpCycle() {
+  // Mark a (potential) switch moment so the power monitor skips inrush/settling.
+  lastSwitchMs = (new Date()).getTime();
   // Clear existing timer
   if (timerHandle !== null) {
     Timer.clear(timerHandle);
@@ -263,6 +298,111 @@ function sendDailyStatus() {
   dailyStatusTimerHandle = Timer.set(24 * 60 * 60 * 1000, false, sendDailyStatus);
 }
 
+// Minimal URL encoder for the Kuma msg (Shelly mJS has no encodeURIComponent).
+function urlMsg(text) {
+  if (typeof text !== 'string') { text = "" + text; }
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    let c = text[i];
+    if (c === ' ') { out += "%20"; }
+    else if (c === '|') { out += "%7C"; }
+    else if (c === '&') { out += "%26"; }
+    else if (c === '#') { out += "%23"; }
+    else if (c === '+') { out += "%2B"; }
+    else { out += c; }
+  }
+  return out;
+}
+
+// Send a heartbeat to Uptime Kuma. ping carries the active power (W) so Kuma
+// graphs the pump load over time (a step down = a pump dropped out).
+function pushKuma(status, msg, ping) {
+  if (!CONFIG_ENABLE_KUMA || CONFIG_KUMA_PUSH_URL === "") {
+    print("Kuma push disabled or URL not configured.");
+    return;
+  }
+  let url = CONFIG_KUMA_PUSH_URL + "?status=" + status + "&msg=" + urlMsg(msg) + "&ping=" + ping;
+  Shelly.call("HTTP.GET", { url: url, timeout: 10, ssl_ca: "*" }, function(res, ec, em) {
+    if (ec !== 0) { print("Kuma push failed: code=" + ec + " msg=" + em); }
+    else { print("Kuma push ok (" + status + "): " + msg); }
+  });
+}
+
+// Read the switch power meter, derive pump health and push it to Uptime Kuma.
+// Optionally raises a LOUD Telegram alert on fault onset / recovery.
+function checkPumpsAndPush() {
+  Shelly.call("Switch.GetStatus", {'id': CONFIG_SWITCH_ID}, function(st, ec, em) {
+    if (ec !== 0 || !st) {
+      print("Pump monitor: Switch.GetStatus failed: " + ec + " " + em);
+      pushKuma("down", "shelly_getstatus_error", "");
+      return;
+    }
+
+    let relayOn = (typeof st.output !== 'undefined') ? st.output : (st.ison === true);
+    let watt = (typeof st.apower  === 'number') ? st.apower  : -1;
+    let volt = (typeof st.voltage === 'number') ? st.voltage : -1;
+    let amp  = (typeof st.current === 'number') ? st.current : -1;
+    let wattR = (watt >= 0) ? Math.round(watt * 10) / 10 : -1;
+    let voltR = (volt >= 0) ? Math.round(volt * 10) / 10 : -1;
+    let ampR  = (amp  >= 0) ? Math.round(amp * 1000) / 1000 : -1;
+
+    let inGrace = ((new Date()).getTime() - lastSwitchMs) < (CONFIG_PUMP_GRACE_SEC * 1000);
+    let status = "up";
+    let label = "";
+    let human = "";
+
+    if (relayOn) {
+      // Pumps are supposed to run — infer how many actually draw power.
+      let running = (watt >= 0) ? Math.round(watt / CONFIG_PUMP_WATT_EACH) : CONFIG_PUMP_COUNT;
+      if (running > CONFIG_PUMP_COUNT) { running = CONFIG_PUMP_COUNT; }
+      if (running < 0) { running = 0; }
+
+      if (inGrace) {
+        label = "starting";
+      } else if (running >= CONFIG_PUMP_COUNT) {
+        label = "OK_" + CONFIG_PUMP_COUNT + "of" + CONFIG_PUMP_COUNT + "_pumps";
+      } else {
+        status = "down";
+        label = "FAIL_" + running + "of" + CONFIG_PUMP_COUNT + "_pumps";
+        human = "Nur " + running + " von " + CONFIG_PUMP_COUNT + " Pumpen laufen (" + wattR + " W).";
+      }
+    } else {
+      // Pumps are supposed to be OFF (night off-phase).
+      if (watt >= 0 && watt > CONFIG_PUMP_OFF_MAX_W) {
+        status = "down";
+        label = "anomaly_power_while_off";
+        human = "Leistung trotz AUS: " + wattR + " W (Relais klemmt / Leckstrom?).";
+      } else {
+        label = "off_cycle";
+      }
+    }
+
+    // Mains voltage sanity check.
+    if (volt >= 0 && (volt < CONFIG_VOLTAGE_MIN || volt > CONFIG_VOLTAGE_MAX)) {
+      status = "down";
+      label = label + "_VOLT";
+      human = (human === "" ? "" : human + " ") + "Netzspannung auffaellig: " + voltR + " V.";
+    }
+
+    let msg = label + "__" + wattR + "W_" + voltR + "V_" + ampR + "A";
+    let pingVal = (watt >= 0) ? wattR : "";
+    pushKuma(status, msg, pingVal);
+
+    // Telegram only on state transitions, to avoid an alert every interval.
+    if (status === "down" && !pumpFaultActive) {
+      pumpFaultActive = true;
+      if (CONFIG_KUMA_ALERT_TELEGRAM) {
+        sendNotification("⚠️ Pumpen-Problem erkannt\n" + (human === "" ? msg : human), false, true);
+      }
+    } else if (status === "up" && pumpFaultActive) {
+      pumpFaultActive = false;
+      if (CONFIG_KUMA_ALERT_TELEGRAM) {
+        sendNotification("✅ Pumpen wieder normal (" + wattR + " W)", true);
+      }
+    }
+  });
+}
+
 // Function to initialize timers and start the first cycle
 function initializeCycle() {
     print("Hydroponic Cycle Script (Cycles, Adv. Notify): Initializing...");
@@ -286,6 +426,14 @@ function initializeCycle() {
     // First run after msToTarget; sendDailyStatus reschedules itself every 24h
     dailyStatusTimerHandle = Timer.set(msToTarget, false, sendDailyStatus);
     print("Daily status report scheduled for " + CONFIG_DAILY_STATUS_HOUR + ":00 (next run in approx. " + Math.round(msToTarget/60000) + " min).");
+
+    // Schedule the periodic Uptime Kuma push (pump-health heartbeat)
+    if (CONFIG_ENABLE_KUMA && CONFIG_KUMA_PUSH_URL !== "") {
+        if (kumaTimerHandle !== null) Timer.clear(kumaTimerHandle);
+        kumaTimerHandle = Timer.set(CONFIG_KUMA_INTERVAL_SEC * 1000, true, checkPumpsAndPush);
+        Timer.set(5000, false, checkPumpsAndPush); // first push shortly after startup
+        print("Uptime Kuma push scheduled every " + CONFIG_KUMA_INTERVAL_SEC + "s.");
+    }
 
 
     // Short delay, then start first cycle AND send LOUD startup notification

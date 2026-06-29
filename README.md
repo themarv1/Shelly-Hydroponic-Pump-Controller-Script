@@ -31,6 +31,19 @@ At the transition between day and night (and back), the script switches mode aut
 - **Accurate daily status timer:** Self-reschedules every 24 h instead of relying on the Shelly `repeat` interval.
 - **mJS based:** Runs entirely on-device, no external server needed.
 
+### Monitoring (Uptime Kuma & pump-failure detection)
+
+The script pushes a heartbeat to an [Uptime Kuma](https://github.com/louislam/uptime-kuma) **Push** monitor (default every 60 s):
+
+- If the Shelly loses power or Wi-Fi, the heartbeats stop and Kuma marks the monitor **down**.
+- The active power (W) is sent as the Kuma `ping` value, so you get a **graph of the pump load** over time.
+- **Pump-failure detection:** all pumps share one switch/meter, so the script infers **how many pumps run** from the total power draw. If the draw drops by roughly one pump's wattage while the pumps should run, the monitor goes **down** and (optionally) a loud Telegram alert is sent. It detects *that* a pump failed, **not which one** — a shared meter can't tell them apart.
+
+Setup:
+1. In Uptime Kuma create a **Push** monitor and put its URL into `CONFIG_KUMA_PUSH_URL` (without the query string).
+2. Set Kuma's heartbeat/retry timeout **higher** than `CONFIG_KUMA_INTERVAL_SEC` (e.g. push 60 s, Kuma timeout 180 s).
+3. Read your pumps' normal draw (Shelly web UI) and tune `CONFIG_PUMP_COUNT` and `CONFIG_PUMP_WATT_EACH`.
+
 ### Requirements
 
 - **Hardware:** Shelly Plus 1PM (should work on other Gen2/Gen3 devices with mJS and switch output, untested)
@@ -62,6 +75,14 @@ let CONFIG_TELEGRAM_BOT_TOKEN      = "DEIN_BOT_TOKEN_HIER_EINFUEGEN";  // !! REP
 let CONFIG_TELEGRAM_CHAT_ID        = "DEINE_CHAT_ID_HIER_EINFUEGEN";   // !! REPLACE !!
 let CONFIG_DEBUG_PUMP_NOTIFICATIONS = false;  // true = notify on every pump action
 let CONFIG_DAILY_STATUS_HOUR       = 8;       // Hour for daily status message (0-23)
+let CONFIG_SHELLY_URL              = "";      // local Shelly URL for the error-notification button
+
+// Uptime Kuma + pump-failure monitoring (see "Monitoring" below)
+let CONFIG_ENABLE_KUMA        = true;
+let CONFIG_KUMA_PUSH_URL      = "https://status.example/api/push/XXXX"; // your Kuma push URL
+let CONFIG_KUMA_INTERVAL_SEC  = 60;     // push heartbeat every 60 s
+let CONFIG_PUMP_COUNT         = 3;      // pumps on this switch
+let CONFIG_PUMP_WATT_EACH     = 14.3;   // ~ measured watts per pump (tune to your pumps!)
 ```
 
 **Important:** Replace `CONFIG_TELEGRAM_BOT_TOKEN` and `CONFIG_TELEGRAM_CHAT_ID` with your actual values before running.
@@ -117,6 +138,19 @@ Beim Wechsel zwischen Tag und Nacht (und zurück) schaltet das Skript den Modus 
 - **Genauer Tagesstatus-Timer:** Plant sich alle 24 h selbst neu ein, statt auf das fehlerhafte Shelly `repeat`-Intervall zu vertrauen.
 - **mJS-basiert:** Läuft vollständig auf dem Gerät, kein externer Server nötig.
 
+### Monitoring (Uptime Kuma & Pumpen-Ausfallerkennung)
+
+Das Skript schickt einen Heartbeat an einen [Uptime Kuma](https://github.com/louislam/uptime-kuma) **Push**-Monitor (Standard: alle 60 s):
+
+- Verliert der Shelly Strom oder WLAN, bleiben die Heartbeats aus und Kuma meldet den Monitor als **down**.
+- Die Wirkleistung (W) wird als Kuma-`ping`-Wert gesendet → du bekommst einen **Verlaufsgraphen der Pumpenlast**.
+- **Pumpen-Ausfallerkennung:** Alle Pumpen hängen an einem Switch/Messpunkt, daher leitet das Skript aus der **Gesamtleistung** ab, **wie viele Pumpen laufen**. Fällt die Leistung um etwa eine Pumpenleistung, obwohl die Pumpen laufen sollten, geht der Monitor **down** und (optional) kommt ein lauter Telegram-Alarm. Erkannt wird *dass* eine Pumpe ausfällt, **nicht welche** — ein gemeinsamer Messpunkt kann sie nicht unterscheiden.
+
+Einrichtung:
+1. In Uptime Kuma einen **Push**-Monitor anlegen und dessen URL in `CONFIG_KUMA_PUSH_URL` eintragen (ohne Query-String).
+2. Kumas Heartbeat-/Retry-Timeout **größer** als `CONFIG_KUMA_INTERVAL_SEC` setzen (z. B. Push 60 s, Kuma-Timeout 180 s).
+3. Normale Leistungsaufnahme der Pumpen (Shelly-Web-UI) ablesen und `CONFIG_PUMP_COUNT` + `CONFIG_PUMP_WATT_EACH` anpassen.
+
 ### Voraussetzungen
 
 - **Hardware:** Shelly Plus 1PM (sollte auf anderen Gen2/Gen3-Geräten mit mJS und Schaltausgang funktionieren, ungetestet)
@@ -148,6 +182,14 @@ let CONFIG_TELEGRAM_BOT_TOKEN      = "DEIN_BOT_TOKEN_HIER_EINFUEGEN";  // !! ERS
 let CONFIG_TELEGRAM_CHAT_ID        = "DEINE_CHAT_ID_HIER_EINFUEGEN";   // !! ERSETZEN !!
 let CONFIG_DEBUG_PUMP_NOTIFICATIONS = false;  // true = Nachricht bei jedem Schaltvorgang
 let CONFIG_DAILY_STATUS_HOUR       = 8;       // Stunde für tägliche Statusmeldung (0-23)
+let CONFIG_SHELLY_URL              = "";      // lokale Shelly-URL für den Fehler-Benachrichtigungs-Button
+
+// Uptime Kuma + Pumpen-Ausfall-Überwachung (siehe "Monitoring" unten)
+let CONFIG_ENABLE_KUMA        = true;
+let CONFIG_KUMA_PUSH_URL      = "https://status.example/api/push/XXXX"; // deine Kuma-Push-URL
+let CONFIG_KUMA_INTERVAL_SEC  = 60;     // Heartbeat alle 60 s
+let CONFIG_PUMP_COUNT         = 3;      // Pumpen an diesem Switch
+let CONFIG_PUMP_WATT_EACH     = 14.3;   // ~ gemessene Watt pro Pumpe (an deine Pumpen anpassen!)
 ```
 
 **Wichtig:** Ersetze `CONFIG_TELEGRAM_BOT_TOKEN` und `CONFIG_TELEGRAM_CHAT_ID` mit deinen echten Werten, bevor du das Skript startest.
