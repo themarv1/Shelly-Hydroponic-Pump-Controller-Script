@@ -1,4 +1,4 @@
-// Shelly Hydroponic Pump Controller Script v8.4 (English Comments/Logs)
+// Shelly Hydroponic Pump Controller Script v8.5 (English Comments/Logs)
 // ------------------------------------------------------------------------------------------
 // This script controls a pump (connected to Shelly Switch 0) for a hydroponic system.
 // Day mode (06:00-22:00): pump runs continuously.
@@ -14,7 +14,7 @@
 //                  - LOUD notification for critical timer errors.
 //
 // AUTHOR: themarv1
-// VERSION: 8.4
+// VERSION: 8.5
 // DATE: 2025-04-24 (Adaptation date)
 //
 // PLEASE ADJUST CONFIGURATION AND TEST THOROUGHLY! USE AT YOUR OWN RISK.
@@ -49,6 +49,8 @@ let CONFIG_TELEGRAM_CHAT_ID = "DEINE_CHAT_ID_HIER_EINFUEGEN";
 let CONFIG_DEBUG_PUMP_NOTIFICATIONS = false;
 // Hour for daily status message (0-23)
 let CONFIG_DAILY_STATUS_HOUR = 8; // Example: 08:00 AM
+// Local URL to Shelly web UI – shown as button in error notifications (leave empty to disable)
+let CONFIG_SHELLY_URL = "";  // e.g. "http://192.168.178.42"
 
 // --- END CONFIGURATION ---
 
@@ -74,9 +76,11 @@ function escapeHtml(text) {
 }
 
 // Function to send a notification via Telegram Bot API (with silent option)
-function sendNotification(message, isSilent) {
+// includeShellyButton: if true and CONFIG_SHELLY_URL is set, adds an inline button to open the Shelly UI
+function sendNotification(message, isSilent, includeShellyButton) {
   // Default is LOUD (isSilent = false)
   isSilent = (typeof isSilent === 'boolean' && isSilent);
+  includeShellyButton = (typeof includeShellyButton === 'boolean' && includeShellyButton);
 
   if (!CONFIG_ENABLE_NOTIFICATIONS || CONFIG_TELEGRAM_BOT_TOKEN === "DEIN_BOT_TOKEN_HIER_EINFUEGEN" || CONFIG_TELEGRAM_CHAT_ID === "DEINE_CHAT_ID_HIER_EINFUEGEN") {
     print("Notifications disabled or Bot Token/Chat ID not configured.");
@@ -97,6 +101,15 @@ function sendNotification(message, isSilent) {
   // Add disable_notification if message should be silent
   if (isSilent) {
     payload.disable_notification = true;
+  }
+
+  // Add inline keyboard button linking to Shelly web UI (only for error notifications)
+  if (includeShellyButton && CONFIG_SHELLY_URL !== "") {
+    payload.reply_markup = {
+      inline_keyboard: [[
+        { text: "🔧 Shelly öffnen", url: CONFIG_SHELLY_URL }
+      ]]
+    };
   }
 
   // Reset flag BEFORE sending a LOUD message to ensure it always tries (unless repeated error)
@@ -167,7 +180,10 @@ function runPumpCycle() {
           isCurrentlyOn = true;
           print("Hydroponic Cycle: Pump switched ON (continuous day mode).");
           if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("💧 Pumpe EIN (Tagdauerbetrieb)", true); }
-        } else { print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg); }
+        } else {
+          print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg);
+          sendNotification("⚠️ FEHLER: Pumpe AN schalten fehlgeschlagen\nCode: " + err_code + " – Shelly prüfen!", false, true);
+        }
       });
     } else {
       print("Hydroponic Cycle: Pump already ON.");
@@ -188,7 +204,10 @@ function runPumpCycle() {
           isCurrentlyOn = true;
           print("Hydroponic Cycle: Pump switched ON.");
           if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("💧 Pumpe EIN (Zyklus)", true); }
-        } else { print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg); }
+        } else {
+          print("ERROR switching pump ON: Code "+err_code+", Msg: "+err_msg);
+          sendNotification("⚠️ FEHLER: Pumpe AN schalten fehlgeschlagen\nCode: " + err_code + " – Shelly prüfen!", false, true);
+        }
       });
       nextTimerDelaySec = CONFIG_NIGHT_ON_MIN * 60;
       print("Hydroponic Cycle: Next action (OFF) in " + CONFIG_NIGHT_ON_MIN + " minutes.");
@@ -199,7 +218,10 @@ function runPumpCycle() {
           isCurrentlyOn = false;
           print("Hydroponic Cycle: Pump switched OFF.");
           if (CONFIG_DEBUG_PUMP_NOTIFICATIONS) { sendNotification("💧 Pumpe AUS (Zyklus)", true); }
-        } else { print("ERROR switching pump OFF: Code "+err_code+", Msg: "+err_msg); }
+        } else {
+          print("ERROR switching pump OFF: Code "+err_code+", Msg: "+err_msg);
+          sendNotification("⚠️ FEHLER: Pumpe AUS schalten fehlgeschlagen\nCode: " + err_code + " – Shelly prüfen!", false, true);
+        }
       });
       nextTimerDelaySec = CONFIG_NIGHT_OFF_MIN * 60;
       print("Hydroponic Cycle: Next action (ON) in " + CONFIG_NIGHT_OFF_MIN + " minutes.");
@@ -210,7 +232,7 @@ function runPumpCycle() {
     } else {
       print("Hydroponic Cycle: Error - Timer delay is zero or negative. Stopping cycle.");
       notificationSent = false;
-      sendNotification("⚠️ FEHLER: Timer-Delay ungültig (" + nextTimerDelaySec + "s)\nZyklus gestoppt – Shelly neu starten!", false);
+      sendNotification("⚠️ FEHLER: Timer-Delay ungültig (" + nextTimerDelaySec + "s)\nZyklus gestoppt – Shelly neu starten!", false, true);
     }
   }
 }

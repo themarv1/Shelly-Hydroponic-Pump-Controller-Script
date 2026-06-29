@@ -4,6 +4,12 @@ Notable changes to the Hydroponic Pump Controller script. Loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the version number tracks the
 script's internal `VERSION` constant.
 
+## [8.5] – Unreleased
+### Added
+- Inline keyboard with a Shelly button on error notifications.
+
+> Base for upcoming work: Uptime Kuma push + pump power-failure detection.
+
 ## [8.4] – 2025-04-24
 ### Changed
 - German Telegram notifications with emojis: loud startup alert, silent
