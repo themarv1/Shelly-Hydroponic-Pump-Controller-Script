@@ -38,6 +38,7 @@ The script pushes a heartbeat to an [Uptime Kuma](https://github.com/louislam/up
 - If the Shelly loses power or Wi-Fi, the heartbeats stop and Kuma marks the monitor **down**.
 - The active power (W) is sent as the Kuma `ping` value, so you get a **graph of the pump load** over time.
 - **Pump-failure detection:** all pumps share one switch/meter, so the script infers **how many pumps run** from the total power draw. If the draw drops by roughly one pump's wattage while the pumps should run, the monitor goes **down** and (optionally) a loud Telegram alert is sent. It detects *that* a pump failed, **not which one** — a shared meter can't tell them apart.
+- **Fluctuation- & cycle-proof:** the fault is **debounced** (`CONFIG_PUMP_FAULT_STREAK` consecutive readings) so normal power swings don't false-trigger, and the verdict is **carried across the OFF phases**, so the night cycle never causes flapping. Health is only judged while the pumps actually run.
 
 Setup:
 1. In Uptime Kuma create a **Push** monitor and put its URL into `CONFIG_KUMA_PUSH_URL` (without the query string).
@@ -145,6 +146,7 @@ Das Skript schickt einen Heartbeat an einen [Uptime Kuma](https://github.com/lou
 - Verliert der Shelly Strom oder WLAN, bleiben die Heartbeats aus und Kuma meldet den Monitor als **down**.
 - Die Wirkleistung (W) wird als Kuma-`ping`-Wert gesendet → du bekommst einen **Verlaufsgraphen der Pumpenlast**.
 - **Pumpen-Ausfallerkennung:** Alle Pumpen hängen an einem Switch/Messpunkt, daher leitet das Skript aus der **Gesamtleistung** ab, **wie viele Pumpen laufen**. Fällt die Leistung um etwa eine Pumpenleistung, obwohl die Pumpen laufen sollten, geht der Monitor **down** und (optional) kommt ein lauter Telegram-Alarm. Erkannt wird *dass* eine Pumpe ausfällt, **nicht welche** — ein gemeinsamer Messpunkt kann sie nicht unterscheiden.
+- **Schwankungs- & taktfest:** Der Fehler ist **entprellt** (`CONFIG_PUMP_FAULT_STREAK` Messungen in Folge), damit normale Leistungsschwankungen nicht fehlauslösen, und der Zustand wird **über die AUS-Phasen mitgenommen**, sodass der Nacht-Takt kein Geflatter erzeugt. Bewertet wird nur, während die Pumpen tatsächlich laufen.
 
 Einrichtung:
 1. In Uptime Kuma einen **Push**-Monitor anlegen und dessen URL in `CONFIG_KUMA_PUSH_URL` eintragen (ohne Query-String).

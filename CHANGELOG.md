@@ -13,10 +13,16 @@ script's internal `VERSION` constant.
   script infers how many pumps run from total power draw. A drop of ~one pump's
   wattage marks the monitor down and (optionally) sends a loud Telegram alert.
   It detects *that* a pump failed, not *which* one (shared meter).
+- **Robust against fluctuation & cycling:** the pump-count fault is debounced
+  (`CONFIG_PUMP_FAULT_STREAK`, default 3 consecutive readings) and the verdict is
+  carried across the night OFF phases — so normal power swings and the ON/OFF cycle
+  cause neither false alarms nor flapping. Health is only (re)evaluated while the
+  pumps actually run; OFF phases just heartbeat the last known state.
 - Mains-voltage sanity check and a "current while OFF" anomaly check.
 - New config: `CONFIG_ENABLE_KUMA`, `CONFIG_KUMA_PUSH_URL`, `CONFIG_KUMA_INTERVAL_SEC`,
   `CONFIG_KUMA_ALERT_TELEGRAM`, `CONFIG_PUMP_COUNT`, `CONFIG_PUMP_WATT_EACH`,
-  `CONFIG_PUMP_OFF_MAX_W`, `CONFIG_PUMP_GRACE_SEC`, `CONFIG_VOLTAGE_MIN/MAX`.
+  `CONFIG_PUMP_OFF_MAX_W`, `CONFIG_PUMP_GRACE_SEC`, `CONFIG_PUMP_FAULT_STREAK`,
+  `CONFIG_VOLTAGE_MIN/MAX`.
 
 ## [8.5] – Unreleased
 ### Added

@@ -78,6 +78,7 @@ let CONFIG_PUMP_COUNT = 3;          // number of pumps on this switch
 let CONFIG_PUMP_WATT_EACH = 14.3;   // ~ measured 42.8 W / 3 pumps — TUNE after watching real data
 let CONFIG_PUMP_OFF_MAX_W = 5;      // power above this while relay is OFF = anomaly (stuck relay / leakage)
 let CONFIG_PUMP_GRACE_SEC = 12;     // ignore power right after a switch (motor inrush / settling)
+let CONFIG_PUMP_FAULT_STREAK = 3;   // consecutive ON-phase readings before a fault is declared/cleared (debounce)
 // Mains voltage sanity window (230 V nominal, ±10 %)
 let CONFIG_VOLTAGE_MIN = 207;
 let CONFIG_VOLTAGE_MAX = 253;
@@ -92,7 +93,10 @@ let wasPreviouslyDayTime = null; // State of the previous period for switch dete
 let dailyStatusTimerHandle = null; // Timer for daily status
 let kumaTimerHandle = null;        // Timer for the periodic Uptime Kuma push
 let lastSwitchMs = 0;              // Timestamp of the last pump (re)switch — for the inrush grace window
-let pumpFaultActive = false;       // True while a pump fault is currently signalled (prevents alert spam)
+let pumpFaultActive = false;       // Carried/debounced pump-count fault state (survives OFF phases)
+let faultStreak = 0;               // Consecutive ON-phase readings indicating too few pumps
+let okStreak = 0;                  // Consecutive ON-phase readings indicating all pumps OK
+let alertedDown = false;           // True while a down-episode has been alerted (Telegram de-spam)
 
 // Function to escape HTML characters for Telegram messages (manual version)
 function escapeHtml(text) {
@@ -347,57 +351,66 @@ function checkPumpsAndPush() {
     let ampR  = (amp  >= 0) ? Math.round(amp * 1000) / 1000 : -1;
 
     let inGrace = ((new Date()).getTime() - lastSwitchMs) < (CONFIG_PUMP_GRACE_SEC * 1000);
-    let status = "up";
-    let label = "";
-    let human = "";
+    let phase = "off_cycle";
+    let runningNow = CONFIG_PUMP_COUNT;
 
-    if (relayOn) {
-      // Pumps are supposed to run — infer how many actually draw power.
-      let running = (watt >= 0) ? Math.round(watt / CONFIG_PUMP_WATT_EACH) : CONFIG_PUMP_COUNT;
-      if (running > CONFIG_PUMP_COUNT) { running = CONFIG_PUMP_COUNT; }
-      if (running < 0) { running = 0; }
+    // --- Pump-count fault ---------------------------------------------------
+    // Only evaluable WHILE the pumps run. Debounced (needs several consecutive
+    // bad/good readings) so normal power fluctuation (debris, voltage, water
+    // level) doesn't false-trigger. The verdict is CARRIED across OFF phases,
+    // so the night cycle (15/45) doesn't reset it. OFF phases are neutral here.
+    if (relayOn && inGrace) {
+      phase = "starting";
+    } else if (relayOn) {
+      runningNow = (watt >= 0) ? Math.round(watt / CONFIG_PUMP_WATT_EACH) : CONFIG_PUMP_COUNT;
+      if (runningNow > CONFIG_PUMP_COUNT) { runningNow = CONFIG_PUMP_COUNT; }
+      if (runningNow < 0) { runningNow = 0; }
 
-      if (inGrace) {
-        label = "starting";
-      } else if (running >= CONFIG_PUMP_COUNT) {
-        label = "OK_" + CONFIG_PUMP_COUNT + "of" + CONFIG_PUMP_COUNT + "_pumps";
-      } else {
-        status = "down";
-        label = "FAIL_" + running + "of" + CONFIG_PUMP_COUNT + "_pumps";
-        human = "Nur " + running + " von " + CONFIG_PUMP_COUNT + " Pumpen laufen (" + wattR + " W).";
-      }
+      if (runningNow < CONFIG_PUMP_COUNT) { faultStreak += 1; okStreak = 0; }
+      else { okStreak += 1; faultStreak = 0; }
+
+      if (!pumpFaultActive && faultStreak >= CONFIG_PUMP_FAULT_STREAK) { pumpFaultActive = true; }
+      else if (pumpFaultActive && okStreak >= CONFIG_PUMP_FAULT_STREAK) { pumpFaultActive = false; }
+
+      phase = pumpFaultActive ? "running_FAULT" : "running_ok";
     } else {
-      // Pumps are supposed to be OFF (night off-phase).
-      if (watt >= 0 && watt > CONFIG_PUMP_OFF_MAX_W) {
-        status = "down";
-        label = "anomaly_power_while_off";
-        human = "Leistung trotz AUS: " + wattR + " W (Relais klemmt / Leckstrom?).";
-      } else {
-        label = "off_cycle";
-      }
+      phase = "off_cycle"; // pumps off by schedule -> neutral; carried fault state stays as-is
     }
 
-    // Mains voltage sanity check.
-    if (volt >= 0 && (volt < CONFIG_VOLTAGE_MIN || volt > CONFIG_VOLTAGE_MAX)) {
-      status = "down";
-      label = label + "_VOLT";
-      human = (human === "" ? "" : human + " ") + "Netzspannung auffaellig: " + voltR + " V.";
-    }
+    // --- Immediate secondary checks (rare & meaningful, not debounced) ------
+    let voltBad = (volt >= 0 && (volt < CONFIG_VOLTAGE_MIN || volt > CONFIG_VOLTAGE_MAX));
+    let offAnomaly = (!relayOn && !inGrace && watt >= 0 && watt > CONFIG_PUMP_OFF_MAX_W);
 
-    let msg = label + "__" + wattR + "W_" + voltR + "V_" + ampR + "A";
+    // --- Overall verdict ----------------------------------------------------
+    let down = pumpFaultActive || voltBad || offAnomaly;
+    let status = down ? "down" : "up";
+
+    let human = "";
+    if (pumpFaultActive) { human = "Pumpen-Ausfall: nur ~" + runningNow + " von " + CONFIG_PUMP_COUNT + " laufen (" + wattR + " W)."; }
+    if (offAnomaly)      { human = (human === "" ? "" : human + " ") + "Leistung trotz AUS: " + wattR + " W (Relais klemmt?)."; }
+    if (voltBad)         { human = (human === "" ? "" : human + " ") + "Netzspannung auffaellig: " + voltR + " V."; }
+
+    // --- URL-safe Kuma message ----------------------------------------------
+    let detail = phase;
+    if (phase === "running_ok" || phase === "running_FAULT") { detail = detail + "_" + runningNow + "of" + CONFIG_PUMP_COUNT; }
+    if (offAnomaly) { detail = detail + "_OFFPWR"; }
+    if (voltBad)    { detail = detail + "_VOLT"; }
+    let msg = detail + "__" + wattR + "W_" + voltR + "V_" + ampR + "A";
+
     let pingVal = (watt >= 0) ? wattR : "";
     pushKuma(status, msg, pingVal);
 
-    // Telegram only on state transitions, to avoid an alert every interval.
-    if (status === "down" && !pumpFaultActive) {
-      pumpFaultActive = true;
+    // --- Telegram only at the EDGES of a down-episode (any reason) -----------
+    // -> no spam, and no flapping across the night ON/OFF cycle.
+    if (down && !alertedDown) {
+      alertedDown = true;
       if (CONFIG_KUMA_ALERT_TELEGRAM) {
-        sendNotification("⚠️ Pumpen-Problem erkannt\n" + (human === "" ? msg : human), false, true);
+        sendNotification("⚠️ Hydroponic-Problem\n" + (human === "" ? msg : human), false, true);
       }
-    } else if (status === "up" && pumpFaultActive) {
-      pumpFaultActive = false;
+    } else if (!down && alertedDown) {
+      alertedDown = false;
       if (CONFIG_KUMA_ALERT_TELEGRAM) {
-        sendNotification("✅ Pumpen wieder normal (" + wattR + " W)", true);
+        sendNotification("✅ Hydroponic wieder normal (" + wattR + " W)", true);
       }
     }
   });
